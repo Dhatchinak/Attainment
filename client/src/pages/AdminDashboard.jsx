@@ -4,18 +4,18 @@ import { useAuth } from "../context/AuthContext";
 import AcademicYears from "../components/admin/AcademicYears";
 import SyncFromErp from "../components/admin/SyncFromErp";
 import Batches from "../components/admin/Batches";
+import AdmissionBatches from "../components/admin/AdmissionBatches";
 import Allocations from "../components/admin/Allocations";
 import UploadStudents from "../components/admin/UploadStudents";
 import AttainmentRecords from "../components/admin/AttainmentRecords";
-import ThresholdSettings from "../components/admin/ThresholdSettings";
 
 const TABS = [
   { key: "years", label: "Academic Years", Component: AcademicYears },
   { key: "sync", label: "Sync from ERP", Component: SyncFromErp },
-  { key: "batches", label: "Batches", Component: Batches },
+  { key: "admission-batches", label: "Admission Batches", Component: AdmissionBatches },
+  { key: "batches", label: "Classes", Component: Batches },
   { key: "allocations", label: "Course Allocations", Component: Allocations },
   { key: "students", label: "Upload Students", Component: UploadStudents },
-  { key: "thresholds", label: "Threshold Settings", Component: ThresholdSettings },
   { key: "attainment", label: "Attainment Records", Component: AttainmentRecords },
 ];
 

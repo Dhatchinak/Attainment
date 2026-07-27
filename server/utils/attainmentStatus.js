@@ -29,7 +29,7 @@ async function computeAllocationStatus(allocation) {
 
   const progress = {
     matrixLocked: !!matrix?.isLocked,
-    settingsSet: !!settings?.configuredByAdmin,
+    settingsSet: !!(settings?.configuredByStaff || settings?.configuredByAdmin),
     studentsUploaded: studentCount > 0,
     eseEntered: eseCount > 0,
     ciaEntered: ciaCount > 0,

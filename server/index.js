@@ -15,6 +15,7 @@ const eseRoutes = require("./routes/eseRoutes");
 const ciaRoutes = require("./routes/ciaRoutes");
 const attainmentRoutes = require("./routes/attainmentRoutes");
 const adminRoutes = require("./routes/adminRoutes");
+const manualAttainmentRoutes = require("./routes/manualAttainmentRoutes");
 
 const app = express();
 app.use(cors());
@@ -31,6 +32,7 @@ app.use("/api/ese", eseRoutes);
 app.use("/api/cia", ciaRoutes);
 app.use("/api/attainment", attainmentRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/manual-attainment", manualAttainmentRoutes);
 
 app.use((req, res) => res.status(404).json({ message: "Route not found" }));
 app.use((err, req, res, next) => {

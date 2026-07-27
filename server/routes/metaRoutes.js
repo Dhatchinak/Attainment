@@ -1,127 +1,240 @@
 const express = require("express");
+const mongoose = require("mongoose");
 const AcademicYear = require("../models/AcademicYear");
 const Batch = require("../models/Batch");
 const Allocation = require("../models/Allocation");
 const Staff = require("../models/Staff");
 const { authRequired } = require("../middleware/auth");
 const { fetchStaffFromERP } = require("../utils/externalApi");
-const { deriveProgramme, deriveSemesterFromPaperCode } = require("../utils/erpHelpers");
+const {
+  deriveProgramme,
+  deriveSemesterFromPaperCode,
+  normaliseClassValue,
+  inferAdmissionBatch,
+} = require("../utils/erpHelpers");
 
 const router = express.Router();
 router.use(authRequired);
 
-// Academic years (active only, for staff dropdown)
 router.get("/academic-years", async (req, res) => {
   const years = await AcademicYear.find({ isActive: true }).sort({ year: -1 });
   res.json(years);
 });
 
+function paperIdentity(entry) {
+  return [
+    normaliseClassValue(entry.program_id),
+    normaliseClassValue(entry.year),
+    normaliseClassValue(entry.section_name),
+    normaliseClassValue(entry.paper_code),
+  ].join("::");
+}
+
+async function mergeDuplicateBatches({ staffId, academicYearId }) {
+  const allocations = await Allocation.find({
+    staff_id: staffId,
+    academicYear: academicYearId,
+  }).populate("batch");
+
+  const canonicalByClass = new Map();
+  let removedAllocations = 0;
+  let removedBatches = 0;
+
+  for (const allocation of allocations) {
+    if (!allocation.batch) continue;
+    const batch = allocation.batch;
+    const classKey = [
+      normaliseClassValue(batch.program_id || batch.course),
+      normaliseClassValue(batch.year),
+      normaliseClassValue(batch.section),
+      String(academicYearId),
+    ].join("::");
+
+    if (!canonicalByClass.has(classKey)) {
+      canonicalByClass.set(classKey, batch);
+      continue;
+    }
+
+    const canonical = canonicalByClass.get(classKey);
+    const existing = await Allocation.findOne({
+      _id: { $ne: allocation._id },
+      staff_id: allocation.staff_id,
+      batch: canonical._id,
+      academicYear: academicYearId,
+      paperCode: allocation.paperCode,
+      isActive: true,
+    });
+
+    if (existing) {
+      await Allocation.deleteOne({ _id: allocation._id });
+      removedAllocations++;
+    } else {
+      allocation.batch = canonical._id;
+      await allocation.save();
+    }
+  }
+
+  const candidateBatches = await Batch.find({ academicYear: academicYearId, source: "erp_sync" });
+  for (const batch of candidateBatches) {
+    const count = await Allocation.countDocuments({ batch: batch._id });
+    if (count === 0) {
+      await Batch.deleteOne({ _id: batch._id });
+      removedBatches++;
+    }
+  }
+
+  return { removedAllocations, removedBatches };
+}
+
 /**
- * Pulls the LOGGED-IN staff's own "class_attend" list straight from their ERP
- * profile (https://apierp.bhc.edu.in/api/staff/{staffid}) and turns it into
- * local Batch + Allocation records — so a staff member sees their real classes
- * in the dropdowns without waiting on an admin to sync anything.
- *
- * class_attend entries don't carry a semester number (same gap as the admin
- * department sync), so — exactly like the college's original tool, which also
- * has staff pick Semester explicitly on its form — the staff picks ONE
- * semester to tag this sync batch with.
+ * Fetch the logged-in staff profile once and create one allocation for each
+ * unique class + paper. Timetable day/hour repetitions are deliberately ignored.
  */
 router.post("/sync-my-classes", async (req, res) => {
   try {
-    const { academicYear, semester } = req.body;
-    if (!academicYear || !semester) {
-      return res.status(400).json({ message: "academicYear and semester are required" });
+    const { academicYear } = req.body;
+    if (!academicYear) {
+      return res.status(400).json({ message: "academicYear is required" });
     }
 
     const academicYearDoc = await AcademicYear.findById(academicYear);
     if (!academicYearDoc) return res.status(404).json({ message: "Academic year not found" });
 
     const erpData = await fetchStaffFromERP(req.user.staff_id);
-    if (!erpData) return res.status(502).json({ message: "Could not reach the college ERP (staff API)" });
+    if (!erpData) return res.status(502).json({ message: "Could not reach the college ERP staff API" });
 
-    const classAttend = Array.isArray(erpData.class_attend) ? erpData.class_attend : [];
-    if (classAttend.length === 0) {
-      return res.status(404).json({ message: "No classes found in your ERP profile (class_attend is empty)" });
+    const rawClasses = Array.isArray(erpData.class_attend) ? erpData.class_attend : [];
+    if (rawClasses.length === 0) {
+      return res.status(404).json({ message: "No classes found in your ERP profile" });
     }
 
-    // Group by (program_id, year, section_name) -> one Batch each
-    const batchGroups = new Map();
-    classAttend.forEach((c) => {
-      const key = `${c.program_id}::${c.year}::${c.section_name}`;
-      if (!batchGroups.has(key)) batchGroups.set(key, { ...c, papers: new Map() });
-      const group = batchGroups.get(key);
-      if (c.paper_code && !group.papers.has(c.paper_code)) {
-        group.papers.set(c.paper_code, { paperCode: c.paper_code, paperName: c.paper_title, paperType: c.paper_type });
-      }
-    });
+    // Remove day-order/hour duplicates from class_attend.
+    const uniqueClasses = new Map();
+    for (const entry of rawClasses) {
+      if (!entry?.program_id || !entry?.year || !entry?.section_name || !entry?.paper_code) continue;
+      const key = paperIdentity(entry);
+      if (!uniqueClasses.has(key)) uniqueClasses.set(key, entry);
+    }
 
-    let batchesSynced = 0, allocationsCreated = 0, allocationsUpdated = 0;
+    let batchesSynced = 0;
+    let allocationsCreated = 0;
+    let allocationsUpdated = 0;
+    let skippedUnknownSemester = 0;
 
-    for (const group of batchGroups.values()) {
-      const programme = deriveProgramme(group.program_id);
-      const displayName = `${group.year} ${group.department_name} ${group.section_name}`.replace(/\s+/g, " ").trim();
+    for (const entry of uniqueClasses.values()) {
+      const programme = deriveProgramme(entry.program_id);
+      const inferred = inferAdmissionBatch({
+        academicYearLabel: academicYearDoc.year,
+        yearOfStudy: entry.year,
+        programme,
+        programId: entry.program_id,
+      });
 
+      // program_id is the canonical ERP class identity. Do not use department_name
+      // as course identity because many programmes share the same department name.
       const batch = await Batch.findOneAndUpdate(
-        { course: group.department_name, year: String(group.year), section: group.section_name, academicYear: academicYearDoc._id },
         {
-          programme,
-          course: group.department_name,
-          year: String(group.year),
-          section: group.section_name,
+          program_id: normaliseClassValue(entry.program_id),
+          year: String(entry.year),
+          section: normaliseClassValue(entry.section_name),
           academicYear: academicYearDoc._id,
-          program_id: group.program_id,
-          displayName,
-          source: "erp_sync",
-          isActive: true,
         },
-        { upsert: true, new: true }
+        {
+          $set: {
+            programme,
+            course: entry.program_id,
+            year: String(entry.year),
+            section: normaliseClassValue(entry.section_name),
+            academicYear: academicYearDoc._id,
+            admissionYear: inferred.admissionYear,
+            department_code: erpData.department_code,
+            program_id: normaliseClassValue(entry.program_id),
+            displayName: `${entry.year} ${entry.program_id.replace(/^(UG|PG)-/i, "").replace(/-/g, " ")} ${entry.section_name} · ${inferred.label || academicYearDoc.year}`
+              .replace(/\s+/g, " ")
+              .trim(),
+            source: "erp_sync",
+            isActive: true,
+          },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
       );
       batchesSynced++;
 
-      for (const paper of group.papers.values()) {
-        // Prefer the semester encoded in the paper code itself (real, per-paper truth)
-        // over the semester this sweep call happens to be tagging — otherwise the same
-        // paper gets re-created under every semester 1-8 the frontend sweeps through.
-        const paperSemester = deriveSemesterFromPaperCode(paper.paperCode) || semester;
-        if (paperSemester !== semester) continue; // only persist under its real semester
+      const semester = deriveSemesterFromPaperCode(entry.paper_code);
+      if (!semester) {
+        skippedUnknownSemester++;
+        continue;
+      }
 
-        const lockKey = `${batch.course}-${batch.year}-SEM${paperSemester}-${paper.paperCode}-${academicYearDoc._id}`
-          .toUpperCase()
-          .replace(/\s+/g, "_");
+      const lockKey = `${entry.program_id}-${entry.year}-${entry.section_name}-SEM${semester}-${entry.paper_code}-${academicYearDoc._id}`
+        .toUpperCase()
+        .replace(/\s+/g, "_");
 
-        const result = await Allocation.findOneAndUpdate(
-          { staff_id: req.user.staff_id, batch: batch._id, academicYear: academicYearDoc._id, semester: paperSemester, paperCode: paper.paperCode },
-          {
-            staff_id: req.user.staff_id,
-            batch: batch._id,
-            academicYear: academicYearDoc._id,
-            semester: paperSemester,
-            paperCode: paper.paperCode,
-            paperName: paper.paperName,
-            paperType: paper.paperType || "Theory",
+      const result = await Allocation.findOneAndUpdate(
+        {
+          staff_id: req.user.staff_id,
+          batch: batch._id,
+          academicYear: academicYearDoc._id,
+          paperCode: normaliseClassValue(entry.paper_code),
+        },
+        {
+          $set: {
+            semester,
+            paperName: entry.paper_title || entry.paper_code,
+            paperType: entry.paper_type || "Theory",
             lockKey,
             source: "erp_sync",
             isActive: true,
           },
-          { upsert: true, new: true, rawResult: true }
-        );
-        if (result.lastErrorObject?.updatedExisting) allocationsUpdated++; else allocationsCreated++;
-      }
+          $setOnInsert: {
+            staff_id: req.user.staff_id,
+            batch: batch._id,
+            academicYear: academicYearDoc._id,
+            paperCode: normaliseClassValue(entry.paper_code),
+          },
+        },
+        { upsert: true, new: true, rawResult: true, setDefaultsOnInsert: true }
+      );
+
+      if (result.lastErrorObject?.updatedExisting) allocationsUpdated++;
+      else allocationsCreated++;
     }
 
-    // refresh the local staff cache too, while we have fresh ERP data in hand
-    await Staff.findOneAndUpdate({ staff_id: erpData.staff_id }, { name: erpData.name, salute: erpData.salute, designation: erpData.designation, department_code: erpData.department_code, department_name: erpData.department_name, raw: erpData }, { upsert: true });
+    const cleanup = await mergeDuplicateBatches({
+      staffId: req.user.staff_id,
+      academicYearId: academicYearDoc._id,
+    });
 
-    res.json({ message: "Synced your classes from ERP", batchesSynced, allocationsCreated, allocationsUpdated });
+    await Staff.findOneAndUpdate(
+      { staff_id: erpData.staff_id },
+      {
+        name: erpData.name,
+        salute: erpData.salute,
+        designation: erpData.designation,
+        department_code: erpData.department_code,
+        department_name: erpData.department_name,
+        raw: erpData,
+      },
+      { upsert: true, new: true }
+    );
+
+    res.json({
+      message: "Your current ERP classes were synced without timetable duplicates",
+      timetableRows: rawClasses.length,
+      uniqueClassPapers: uniqueClasses.size,
+      batchesSynced,
+      allocationsCreated,
+      allocationsUpdated,
+      skippedUnknownSemester,
+      duplicatesRemoved: cleanup.removedAllocations,
+      emptyDuplicateBatchesRemoved: cleanup.removedBatches,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Sync failed", error: err.message });
   }
 });
 
-// Batches that the LOGGED-IN staff actually teaches in a given academic year + programme.
-// Fully dynamic: derived from Allocation records (admin-managed / erp-synced), never hardcoded.
 router.get("/my-batches", async (req, res) => {
   const { academicYear, programme } = req.query;
   if (!academicYear) return res.status(400).json({ message: "academicYear is required" });
@@ -134,20 +247,22 @@ router.get("/my-batches", async (req, res) => {
 
   const seen = new Set();
   const batches = [];
-  allocations.forEach((a) => {
-    if (!a.batch) return;
-    if (programme && a.batch.programme !== programme) return;
-    const key = String(a.batch._id);
-    if (!seen.has(key)) {
-      seen.add(key);
-      batches.push(a.batch);
-    }
-  });
+  for (const allocation of allocations) {
+    if (!allocation.batch || allocation.batch.isActive === false) continue;
+    if (programme && allocation.batch.programme !== programme) continue;
+    const key = [
+      normaliseClassValue(allocation.batch.program_id || allocation.batch.course),
+      normaliseClassValue(allocation.batch.year),
+      normaliseClassValue(allocation.batch.section),
+    ].join("::");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    batches.push(allocation.batch);
+  }
 
   res.json(batches);
 });
 
-// Semesters + papers that this staff teaches, for a specific batch + academic year.
 router.get("/my-papers", async (req, res) => {
   const { batch, academicYear } = req.query;
   if (!batch || !academicYear) return res.status(400).json({ message: "batch and academicYear are required" });
@@ -159,7 +274,15 @@ router.get("/my-papers", async (req, res) => {
     isActive: true,
   }).sort({ semester: 1, paperCode: 1 });
 
-  res.json(allocations);
+  const seen = new Set();
+  const unique = allocations.filter((allocation) => {
+    const key = normaliseClassValue(allocation.paperCode);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  res.json(unique);
 });
 
 module.exports = router;

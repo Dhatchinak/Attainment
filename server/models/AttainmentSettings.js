@@ -44,7 +44,8 @@ const AttainmentSettingsSchema = new mongoose.Schema(
         { key: "Innovative", label: "Innovative", coStart: 1, coEnd: 6, maxMarks: 10 },
       ],
     },
-    configuredByAdmin: { type: Boolean, default: false },
+    configuredByStaff: { type: Boolean, default: false },
+    configuredByAdmin: { type: Boolean, default: false }, // legacy field retained for older records
     configuredBy: { type: String, default: "" },
     isLocked: { type: Boolean, default: false }, // locked once ESE/CIA entry has started, to keep the math consistent
   },

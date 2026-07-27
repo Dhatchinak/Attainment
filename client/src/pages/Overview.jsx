@@ -29,8 +29,6 @@ const STATUS_META = {
 
 const STEP_ORDER = ["matrixLocked", "settingsSet", "studentsUploaded", "eseEntered", "ciaEntered", "computed"];
 
-const SEMESTERS = Array.from({ length: 8 }, (_, i) => i + 1);
-
 export default function Overview() {
   const { staff, logout } = useAuth();
   const navigate = useNavigate();
@@ -111,22 +109,22 @@ export default function Overview() {
     navigate("/dashboard", { state: null });
   }
 
-  // Pulls this staff's classes straight from the ERP for the selected academic
-  // year, across every semester (class_attend doesn't carry a semester number,
-  // so we sweep 1-8 the same way the manual "Select Course" flow does one at a time).
+  // One ERP profile request is enough. The server removes repeated timetable
+  // day/hour rows and derives each paper's real semester from its paper code.
   async function syncClassesForYear() {
     if (!academicYear) return;
     setSyncing(true);
     setSyncMessage("");
     try {
-      await Promise.allSettled(
-        SEMESTERS.map((semester) => api.post("/meta/sync-my-classes", { academicYear, semester }))
+      const { data } = await api.post("/meta/sync-my-classes", { academicYear });
+      const removed = Number(data.duplicatesRemoved || 0) + Number(data.emptyDuplicateBatchesRemoved || 0);
+      setSyncMessage(
+        `Synced ${data.uniqueClassPapers || 0} unique class-paper${data.uniqueClassPapers === 1 ? "" : "s"}` +
+          (removed ? ` and removed ${removed} old duplicate record${removed === 1 ? "" : "s"}.` : ".")
       );
-      setSyncMessage("Synced your classes from the ERP for this academic year.");
       loadOverview();
-    } catch {
-      setSyncMessage("Sync finished with some errors — showing whatever was found.");
-      loadOverview();
+    } catch (err) {
+      setSyncMessage(err.response?.data?.message || "Could not fetch your current ERP classes.");
     } finally {
       setSyncing(false);
     }

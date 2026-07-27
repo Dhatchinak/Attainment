@@ -10,9 +10,40 @@ const { authRequired } = require("../middleware/auth");
 const { computeConsolidated, computePoPsoAttainment } = require("../utils/attainmentCalc");
 const { buildMatrixKey } = require("../utils/matrixKey");
 const { computeAllocationStatus } = require("../utils/attainmentStatus");
+const { normaliseClassValue } = require("../utils/erpHelpers");
 
 const router = express.Router();
 router.use(authRequired);
+
+
+function dedupeAllocations(allocations) {
+  const bestByKey = new Map();
+  for (const allocation of allocations) {
+    const batch = allocation.batch;
+    const key = [
+      normaliseClassValue(allocation.staff_id),
+      normaliseClassValue(batch?.program_id || batch?.course),
+      normaliseClassValue(batch?.year),
+      normaliseClassValue(batch?.section),
+      normaliseClassValue(allocation.paperCode),
+      String(allocation.academicYear?._id || allocation.academicYear || ""),
+    ].join("::");
+
+    const existing = bestByKey.get(key);
+    if (!existing) {
+      bestByKey.set(key, allocation);
+      continue;
+    }
+
+    // Keep the record with the most recent update. Existing attainment records
+    // are normally attached to this one after a resume/edit.
+    if (new Date(allocation.updatedAt || 0) > new Date(existing.updatedAt || 0)) {
+      bestByKey.set(key, allocation);
+    }
+  }
+  return [...bestByKey.values()];
+}
+
 
 function serializeItem(allocation, statusInfo) {
   return {
@@ -53,8 +84,9 @@ router.get("/overview", async (req, res) => {
     .populate("academicYear")
     .sort({ semester: 1, paperCode: 1 });
 
+  const uniqueAllocations = dedupeAllocations(allocations);
   const items = await Promise.all(
-    allocations.map(async (allocation) => serializeItem(allocation, await computeAllocationStatus(allocation)))
+    uniqueAllocations.map(async (allocation) => serializeItem(allocation, await computeAllocationStatus(allocation)))
   );
 
   res.json(items);
@@ -94,8 +126,9 @@ router.get("/department-overview", async (req, res) => {
     .populate("academicYear")
     .sort({ semester: 1, paperCode: 1 });
 
+  const uniqueAllocations = dedupeAllocations(allocations);
   const items = await Promise.all(
-    allocations.map(async (allocation) => ({
+    uniqueAllocations.map(async (allocation) => ({
       ...serializeItem(allocation, await computeAllocationStatus(allocation)),
       staff: { staff_id: allocation.staff_id, name: staffNameById.get(allocation.staff_id) || allocation.staff_id },
     }))

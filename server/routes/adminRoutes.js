@@ -1,6 +1,7 @@
 const express = require("express");
 const AcademicYear = require("../models/AcademicYear");
 const Batch = require("../models/Batch");
+const AdmissionBatch = require("../models/AdmissionBatch");
 const Allocation = require("../models/Allocation");
 const Attainment = require("../models/Attainment");
 const Staff = require("../models/Staff");
@@ -195,6 +196,42 @@ router.post("/erp/sync-batch", async (req, res) => {
     console.error(err);
     res.status(500).json({ message: "ERP sync failed", error: err.message });
   }
+});
+
+/* ---------------- Admission Batches ---------------- */
+router.get("/admission-batches", async (req, res) => {
+  const filter = {};
+  if (req.query.degree) filter.degree = req.query.degree;
+  res.json(await AdmissionBatch.find(filter).sort({ admissionYear: -1, degree: 1 }));
+});
+
+router.post("/admission-batches", async (req, res) => {
+  try {
+    const { degree, admissionYear, label, isActive = true } = req.body;
+    if (!degree || !admissionYear) return res.status(400).json({ message: "Degree and admission year are required" });
+    const year = Number(admissionYear);
+    const doc = await AdmissionBatch.findOneAndUpdate(
+      { degree, admissionYear: year },
+      { $set: { degree, admissionYear: year, label: (label || `${year} Batch`).trim(), isActive, source: "admin" } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    res.status(201).json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+router.patch("/admission-batches/:id", async (req, res) => {
+  const update = { ...req.body };
+  if (update.admissionYear !== undefined) update.admissionYear = Number(update.admissionYear);
+  const doc = await AdmissionBatch.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true });
+  if (!doc) return res.status(404).json({ message: "Admission batch not found" });
+  res.json(doc);
+});
+
+router.delete("/admission-batches/:id", async (req, res) => {
+  await AdmissionBatch.findByIdAndDelete(req.params.id);
+  res.json({ message: "Admission batch deleted" });
 });
 
 /* ---------------- Batches ---------------- */

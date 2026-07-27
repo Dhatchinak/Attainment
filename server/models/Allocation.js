@@ -23,10 +23,12 @@ const AllocationSchema = new mongoose.Schema(
     },
     credits: { type: Number, default: 0 },
     lockKey: { type: String, required: true, index: true }, // e.g. "<batchCourseYear>-SEM2-PAPERCODE-AY2025"
-    source: { type: String, enum: ["admin", "erp_sync"], default: "admin" },
+    source: { type: String, enum: ["admin", "erp_sync", "attainment_api"], default: "admin" },
     isActive: { type: Boolean, default: true },
   },
   { timestamps: true }
 );
+
+AllocationSchema.index({ staff_id: 1, batch: 1, academicYear: 1, paperCode: 1 }, { unique: true });
 
 module.exports = mongoose.model("Allocation", AllocationSchema);
