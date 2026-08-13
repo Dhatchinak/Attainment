@@ -8,6 +8,7 @@ const ESEMark = require("../models/ESEMark");
 const CIAMark = require("../models/CIAMark");
 const ERPStudentCache = require("../models/ERPStudentCache");
 const { authRequired } = require("../middleware/auth");
+const { deriveSemesterFromPaperCode } = require("../utils/erpHelpers");
 const {
   currentAcademicYear,
   inferDegree,
@@ -112,30 +113,70 @@ router.get("/programmes", async (req, res) => {
   res.json(programmes);
 });
 
-router.get("/years", async (req, res) => {
-  const { degree, course, admissionYear } = req.query;
-  if (!degree || !course || !admissionYear) return res.status(400).json({ message: "degree, batch and programme are required" });
-  const rows = await ERPStudentCache.find({ degree, course }).lean();
-  const years = [...new Set(batchStudentFilter(rows, admissionYear).map((s) => Number(s.year)).filter(Boolean))]
-    .sort((a, b) => a - b);
-  res.json(years);
+router.get("/semesters", async (req, res) => {
+  try {
+    const { degree, course, admissionYear } = req.query;
+    if (!degree || !course || !admissionYear) {
+      return res.status(400).json({ message: "degree, batch and programme are required" });
+    }
+
+    const rows = await ERPStudentCache.find({ degree, course }).sort({ rollno: 1 }).lean();
+    const selectedBatch = batchStudentFilter(rows, admissionYear);
+    if (!selectedBatch.length) return res.json([]);
+
+    // A few students are enough to discover the paper catalogue for a batch.
+    // Use multiple students so electives / missing marks on one record do not hide a semester.
+    const sample = selectedBatch.slice(0, 6);
+    const reports = await Promise.all(sample.map((student) => fetchStudentReport(student.rollno)));
+    const found = new Set();
+
+    reports.forEach((report) => {
+      [...report.ese, ...report.cia].forEach((paper) => {
+        const direct = Number(paper.semester || paper.semesterLabel || 0);
+        const derived = deriveSemesterFromPaperCode(paper.paperCode);
+        const semester = direct || derived;
+        if (semester >= 1 && semester <= 10) found.add(semester);
+      });
+    });
+
+    // Show the complete semester sequence, not only semesters that happened to
+    // appear in the sampled ERP rows. For normal UG/PG this gives 1–6 / 1–4;
+    // if ERP reveals a longer integrated programme (for example semester 9),
+    // expand automatically up to that semester.
+    const defaultMax = degree === "PG" ? 4 : 6;
+    const detectedMax = found.size ? Math.max(...found) : 0;
+    const maxSemester = Math.max(defaultMax, detectedMax);
+    const allSemesters = Array.from({ length: maxSemester }, (_, index) => index + 1);
+
+    res.json(allSemesters);
+  } catch (err) {
+    res.status(502).json({ message: "Unable to discover semesters for this batch", error: err.message });
+  }
 });
 
 router.get("/classes", async (req, res) => {
-  const { degree, course, year, admissionYear } = req.query;
-  if (!degree || !course || !year || !admissionYear) return res.status(400).json({ message: "degree, batch, programme and year are required" });
-  const rows = await ERPStudentCache.find({ degree, course, year: Number(year) }).sort({ rollno: 1 }).lean();
+  const { degree, course, admissionYear } = req.query;
+  if (!degree || !course || !admissionYear) {
+    return res.status(400).json({ message: "degree, batch and programme are required" });
+  }
+
+  const rows = await ERPStudentCache.find({ degree, course }).sort({ rollno: 1 }).lean();
   const selectedBatch = batchStudentFilter(rows, admissionYear);
   const groups = new Map();
-  selectedBatch.forEach((s) => {
-    const section = s.section || "NIL";
-    if (!groups.has(section)) groups.set(section, []);
-    groups.get(section).push(s);
+
+  selectedBatch.forEach((student) => {
+    const section = student.section || "NIL";
+    const studyYear = Number(student.year) || 0;
+    const key = `${studyYear}::${section}`;
+    if (!groups.has(key)) groups.set(key, { section, studyYear, students: [] });
+    groups.get(key).students.push(student);
   });
-  res.json([...groups.entries()].map(([section, students]) => ({
-    key: `${admissionYear}::${course}::${year}::${section}`,
+
+  res.json([...groups.values()].map(({ section, studyYear, students }) => ({
+    key: `${admissionYear}::${course}::${studyYear}::${section}`,
     section,
-    displayName: `${year} Year ${course}${section !== "NIL" ? ` - ${section}` : ""}`,
+    studyYear,
+    displayName: `${studyYear ? `Year ${studyYear}` : "Class"}${section !== "NIL" ? ` · Section ${section}` : ""}`,
     studentCount: students.length,
     sampleRollno: students[0]?.rollno,
   })));
@@ -143,27 +184,41 @@ router.get("/classes", async (req, res) => {
 
 router.get("/papers", async (req, res) => {
   try {
-    const { course, year, section = "NIL", admissionYear } = req.query;
-    if (!course || !year || !admissionYear) return res.status(400).json({ message: "batch, programme and year are required" });
-    const students = await ERPStudentCache.find({ course, year: Number(year), section }).sort({ rollno: 1 }).lean();
-    const selected = batchStudentFilter(students, admissionYear).slice(0, 8);
-    const papers = new Map();
-    for (const student of selected) {
-      const report = await fetchStudentReport(student.rollno);
-      [...report.ese, ...report.cia].forEach((p) => {
-        if (!papers.has(p.paperCode)) papers.set(p.paperCode, { paperCode: p.paperCode, paperName: p.title, paperType: p.paperType });
-      });
+    const { degree, course, section = "NIL", admissionYear, semester } = req.query;
+    if (!degree || !course || !admissionYear || !semester) {
+      return res.status(400).json({ message: "batch, programme, semester and class are required" });
     }
+
+    const rows = await ERPStudentCache.find({ degree, course, section }).sort({ rollno: 1 }).lean();
+    const selected = batchStudentFilter(rows, admissionYear).slice(0, 8);
+    const reports = await Promise.all(selected.map((student) => fetchStudentReport(student.rollno)));
+    const papers = new Map();
+
+    reports.forEach((report) => {
+      [...report.ese, ...report.cia].forEach((paper) => {
+        const paperSemester = Number(paper.semester || paper.semesterLabel || 0) || deriveSemesterFromPaperCode(paper.paperCode);
+        if (Number(paperSemester) !== Number(semester)) return;
+        if (!papers.has(paper.paperCode)) {
+          papers.set(paper.paperCode, {
+            paperCode: paper.paperCode,
+            paperName: paper.title,
+            paperType: paper.paperType,
+            semester: Number(semester),
+          });
+        }
+      });
+    });
+
     res.json([...papers.values()].sort((a, b) => a.paperCode.localeCompare(b.paperCode)));
   } catch (err) {
-    res.status(502).json({ message: "Unable to fetch paper codes for this class", error: err.message });
+    res.status(502).json({ message: "Unable to fetch papers for the selected semester", error: err.message });
   }
 });
 
 router.post("/prepare", async (req, res) => {
   try {
-    const { degree, admissionBatchId, admissionYear, course, year, section = "NIL", paperCode, paperName, paperType } = req.body;
-    if (!degree || !admissionYear || !course || !year || !paperCode) return res.status(400).json({ message: "Complete all manual selections" });
+    const { degree, admissionBatchId, admissionYear, course, year, section = "NIL", semester, paperCode, paperName, paperType } = req.body;
+    if (!degree || !admissionYear || !course || !year || !semester || !paperCode) return res.status(400).json({ message: "Complete all manual selections" });
 
     const academicYearDoc = await ensureCurrentAcademicYear();
     const admissionBatch = admissionBatchId ? await AdmissionBatch.findById(admissionBatchId) : null;
@@ -193,7 +248,7 @@ router.post("/prepare", async (req, res) => {
     const lockKey = `${admissionYear}-${course}-${year}-${section}-${paperCode}-${academicYearDoc.year}`.toUpperCase().replace(/\s+/g, "_");
     const allocation = await Allocation.findOneAndUpdate(
       { staff_id: req.user.staff_id, batch: batch._id, academicYear: academicYearDoc._id, paperCode },
-      { $set: { staff_id: req.user.staff_id, batch: batch._id, academicYear: academicYearDoc._id, semester: Number(req.body.semester || 1), paperCode, paperName: paperName || paperCode, paperType: paperType || "Theory", lockKey, source: "attainment_api", isActive: true } },
+      { $set: { staff_id: req.user.staff_id, batch: batch._id, academicYear: academicYearDoc._id, semester: Number(semester), paperCode, paperName: paperName || paperCode, paperType: paperType || "Theory", lockKey, source: "attainment_api", isActive: true } },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
 

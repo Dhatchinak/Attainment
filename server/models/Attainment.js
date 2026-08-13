@@ -10,8 +10,9 @@ const mongoose = require("mongoose");
  *
  * weightedAverage: simple mean of `weight` across all COs — the paper's single headline number.
  *
- * poAttainment / psoAttainment: derived by multiplying the CO-PO correlation matrix
- * with each CO's `weight`, averaged per PO/PSO.
+ * poAttainment / psoAttainment: mirrors the reference Excel workbook:
+ *   Expected = average of non-zero CO correlation values for that PO/PSO
+ *   Observed = Expected * weightedAverage / 3.
  */
 const AttainmentSchema = new mongoose.Schema(
   {

@@ -186,8 +186,8 @@ router.post("/:allocationId/compute", async (req, res) => {
   });
 
   const { poAttainment, psoAttainment } = computePoPsoAttainment({
-    coAttainmentList: coAttainment,
     matrixRows: matrix.rows,
+    weightedAverage,
     poCount: matrix.poCount,
     psoCount: matrix.psoCount,
   });

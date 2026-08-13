@@ -8,6 +8,7 @@ const mongoose = require("mongoose");
  *   at least this % of max marks in it.
  * targetPercent — the % of students the department targets crossing the
  *   threshold; outcome level = min(3, attainedPercent / targetPercent * 3).
+ * eseMaxMarks — maximum mark of the selected paper's end-semester exam.
  * internalWeight / externalWeight — how much CIA ("Internal") vs ESE
  *   ("External") count toward each CO's final combined attainment
  *   (must add up to 100).
@@ -34,6 +35,7 @@ const AttainmentSettingsSchema = new mongoose.Schema(
     targetPercent: { type: Number, default: 70 },
     internalWeight: { type: Number, default: 25 }, // CIA weight %
     externalWeight: { type: Number, default: 75 }, // ESE weight %
+    eseMaxMarks: { type: Number, default: 75 }, // maximum marks for the end-semester exam
     ciaComponents: {
       type: [CIAComponentSchema],
       default: () => [

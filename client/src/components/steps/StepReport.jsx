@@ -3,18 +3,25 @@ import api from "../../api/axios";
 import { useAuth } from "../../context/AuthContext";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
-function levelColor(v) {
-  if (v >= 2.5) return "#16a34a";
-  if (v >= 1.5) return "#f59e0b";
-  if (v > 0) return "#ef4444";
-  return "#94a3b8";
+function attainmentRatio(observed, expected) {
+  if (!expected || expected <= 0) return 0;
+  return observed / expected;
 }
 
-function levelLabel(v) {
-  if (v >= 2.5) return "Attained";
-  if (v >= 1.5) return "Partially Attained";
-  if (v > 0) return "Below Target";
-  return "No Data";
+function levelColor(observed, expected) {
+  if (!expected || expected <= 0) return "#94a3b8";
+  const ratio = attainmentRatio(observed, expected);
+  if (ratio >= 1) return "#16a34a";
+  if (ratio >= 0.7) return "#f59e0b";
+  return "#ef4444";
+}
+
+function levelLabel(observed, expected) {
+  if (!expected || expected <= 0) return "No Data";
+  const ratio = attainmentRatio(observed, expected);
+  if (ratio >= 1) return "Attained";
+  if (ratio >= 0.7) return "Partially Attained";
+  return "Below Target";
 }
 
 export default function StepReport({ context, onBack }) {
@@ -86,8 +93,8 @@ export default function StepReport({ context, onBack }) {
 
       <h3 className="font-semibold text-gray-700 mb-2">Observed vs Expected Attainment</h3>
       <p className="text-xs text-gray-500 mb-3">
-        Expected is the strongest correlation (High/Medium/Low → 3/2/1) any Course Outcome claims for that PO/PSO in your matrix.
-        Where the green line dips below the blue one, that PO/PSO fell short of what the matrix targets.
+        Expected is the average of the mapped CO correlation values (High/Medium/Low → 3/2/1), matching the reference Excel sheet.
+        Observed is Expected × Weighted CO Average ÷ 3, so it cannot exceed Expected on the 0–3 attainment scale.
       </p>
       <ResponsiveContainer width="100%" height={340}>
         <LineChart data={chartData} margin={{ top: 8, right: 24, left: 0, bottom: 0 }}>
@@ -117,16 +124,16 @@ export default function StepReport({ context, onBack }) {
               <tr key={p.po} className="text-center border-b">
                 <td className="p-2 border font-medium">{p.po}</td>
                 <td className="p-2 border text-blue-600 font-medium">{p.expected.toFixed(2)}</td>
-                <td className="p-2 border font-semibold" style={{ color: levelColor(p.value) }}>{p.value.toFixed(2)}</td>
-                <td className="p-2 border text-xs font-medium" style={{ color: levelColor(p.value) }}>{levelLabel(p.value)}</td>
+                <td className="p-2 border font-semibold" style={{ color: levelColor(p.value, p.expected) }}>{p.value.toFixed(2)}</td>
+                <td className="p-2 border text-xs font-medium" style={{ color: levelColor(p.value, p.expected) }}>{levelLabel(p.value, p.expected)}</td>
               </tr>
             ))}
             {result.psoAttainment.map((p) => (
               <tr key={p.pso} className="text-center border-b bg-indigo-50/40">
                 <td className="p-2 border font-medium">{p.pso}</td>
                 <td className="p-2 border text-blue-600 font-medium">{p.expected.toFixed(2)}</td>
-                <td className="p-2 border font-semibold" style={{ color: levelColor(p.value) }}>{p.value.toFixed(2)}</td>
-                <td className="p-2 border text-xs font-medium" style={{ color: levelColor(p.value) }}>{levelLabel(p.value)}</td>
+                <td className="p-2 border font-semibold" style={{ color: levelColor(p.value, p.expected) }}>{p.value.toFixed(2)}</td>
+                <td className="p-2 border text-xs font-medium" style={{ color: levelColor(p.value, p.expected) }}>{levelLabel(p.value, p.expected)}</td>
               </tr>
             ))}
           </tbody>
@@ -137,9 +144,9 @@ export default function StepReport({ context, onBack }) {
         <span><span className="inline-block w-3 h-0.5 bg-blue-600 align-middle mr-1"></span>Expected Attainment</span>
         <span><span className="inline-block w-3 h-0.5 bg-green-600 align-middle mr-1"></span>Observed Attainment</span>
         <span className="mx-2">|</span>
-        <span><span className="inline-block w-3 h-3 bg-green-600 rounded-sm mr-1"></span>Level 3 (≥2.5)</span>
-        <span><span className="inline-block w-3 h-3 bg-amber-500 rounded-sm mr-1"></span>Level 2 (≥1.5)</span>
-        <span><span className="inline-block w-3 h-3 bg-red-500 rounded-sm mr-1"></span>Level 1 (&gt;0)</span>
+        <span><span className="inline-block w-3 h-3 bg-green-600 rounded-sm mr-1"></span>Attained (≥100% of Expected)</span>
+        <span><span className="inline-block w-3 h-3 bg-amber-500 rounded-sm mr-1"></span>Partially Attained (≥70%)</span>
+        <span><span className="inline-block w-3 h-3 bg-red-500 rounded-sm mr-1"></span>Below Target (&lt;70%)</span>
       </div>
 
       <div className="mt-10 pt-8 grid grid-cols-2 gap-8 text-sm print:mt-14">

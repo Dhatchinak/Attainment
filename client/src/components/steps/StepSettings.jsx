@@ -16,6 +16,7 @@ export default function StepSettings({ context, onNext, onBack }) {
     targetPercent: 70,
     internalWeight: 25,
     externalWeight: 75,
+    eseMaxMarks: 75,
     ciaComponents: DEFAULT_COMPONENTS,
   });
   const [configured, setConfigured] = useState(false);
@@ -36,6 +37,7 @@ export default function StepSettings({ context, onNext, onBack }) {
           targetPercent: data.targetPercent ?? 70,
           internalWeight: data.internalWeight ?? 25,
           externalWeight: data.externalWeight ?? 75,
+          eseMaxMarks: data.eseMaxMarks ?? 75,
           ciaComponents: data.ciaComponents?.length ? data.ciaComponents : DEFAULT_COMPONENTS,
         });
         setConfigured(Boolean(data.configuredByStaff || data.configuredByAdmin));
@@ -112,7 +114,7 @@ export default function StepSettings({ context, onNext, onBack }) {
         <div>
           <span className="section-kicker">STEP 03 · STAFF CONFIGURATION</span>
           <h2>Set Thresholds</h2>
-          <p>Set the threshold, target, CIA/ESE weight and CIA components for this selected paper.</p>
+          <p>Set the threshold, target, CIA/ESE weight, ESE maximum mark and CIA components for this selected paper.</p>
         </div>
         <span className={`status-chip ${configured ? "status-success" : "status-warning"}`}>
           {configured ? "✓ Saved by staff" : "Not yet saved"}
@@ -129,7 +131,7 @@ export default function StepSettings({ context, onNext, onBack }) {
         </div>
       )}
 
-      <div className="grid md:grid-cols-4 gap-4 my-6">
+      <div className="grid md:grid-cols-5 gap-4 my-6">
         <label className="admin-field">
           <span>Marks Threshold %</span>
           <input disabled={locked} type="number" min="0" max="100" className="input-field" value={form.thresholdMarksPercent} onChange={(e) => setField("thresholdMarksPercent", e.target.value)} />
@@ -149,6 +151,11 @@ export default function StepSettings({ context, onNext, onBack }) {
           <span>ESE Weight %</span>
           <input disabled className="input-field" value={form.externalWeight} />
           <small>Automatically balances to 100%</small>
+        </label>
+        <label className="admin-field">
+          <span>ESE Maximum Mark</span>
+          <input disabled={locked} type="number" min="1" className="input-field" value={form.eseMaxMarks} onChange={(e) => setField("eseMaxMarks", e.target.value)} />
+          <small>Example: 75 if the End Semester Examination is out of 75</small>
         </label>
       </div>
 

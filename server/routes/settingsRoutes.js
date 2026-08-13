@@ -55,13 +55,14 @@ router.post("/:allocationId", async (req, res) => {
     return res.status(409).json({ message: "Threshold settings are locked because marks entry has already started." });
   }
 
-  const { thresholdMarksPercent, targetPercent, internalWeight, externalWeight, ciaComponents } = req.body;
+  const { thresholdMarksPercent, targetPercent, internalWeight, externalWeight, eseMaxMarks, ciaComponents } = req.body;
   const threshold = Number(thresholdMarksPercent);
   const target = Number(targetPercent);
   const internal = Number(internalWeight);
   const external = Number(externalWeight);
+  const eseMax = Number(eseMaxMarks);
 
-  if (![threshold, target, internal, external].every(Number.isFinite)) {
+  if (![threshold, target, internal, external, eseMax].every(Number.isFinite)) {
     return res.status(400).json({ message: "Enter valid numeric threshold and weight values" });
   }
   if (threshold < 0 || threshold > 100) {
@@ -72,6 +73,9 @@ router.post("/:allocationId", async (req, res) => {
   }
   if (internal < 0 || external < 0 || internal + external !== 100) {
     return res.status(400).json({ message: "CIA and ESE weights must be non-negative and add up to 100" });
+  }
+  if (eseMax <= 0) {
+    return res.status(400).json({ message: "ESE Maximum Mark must be greater than 0" });
   }
   if (!Array.isArray(ciaComponents) || ciaComponents.length === 0) {
     return res.status(400).json({ message: "At least one CIA component is required" });
@@ -104,6 +108,7 @@ router.post("/:allocationId", async (req, res) => {
       targetPercent: target,
       internalWeight: internal,
       externalWeight: external,
+      eseMaxMarks: eseMax,
       ciaComponents: normalisedComponents,
       configuredByStaff: true,
       configuredByAdmin: false,

@@ -8,12 +8,11 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
   const [admissionBatchId, setAdmissionBatchId] = useState(context.admissionBatchId || "");
   const [programmes, setProgrammes] = useState([]);
   const [course, setCourse] = useState(context.course || "");
-  const [years, setYears] = useState([]);
-  const [studyYear, setStudyYear] = useState(context.studyYear || "");
+  const [semesters, setSemesters] = useState([]);
+  const [semester, setSemester] = useState(context.allocation?.semester || "");
   const [classes, setClasses] = useState([]);
   const [classKey, setClassKey] = useState("");
   const [papers, setPapers] = useState([]);
-  const [paperType, setPaperType] = useState("");
   const [paperCode, setPaperCode] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadingLabel, setLoadingLabel] = useState("Loading current academic year...");
@@ -21,8 +20,7 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
 
   const selectedAdmissionBatch = admissionBatches.find((item) => item._id === admissionBatchId);
   const selectedClass = classes.find((item) => item.key === classKey);
-  const filteredPapers = useMemo(() => papers.filter((paper) => !paperType || paper.paperType === paperType), [papers, paperType]);
-  const paperTypes = useMemo(() => [...new Set(papers.map((paper) => paper.paperType).filter(Boolean))].sort(), [papers]);
+  const selectedPaper = useMemo(() => papers.find((item) => item.paperCode === paperCode), [papers, paperCode]);
 
   useEffect(() => {
     setLoading(true);
@@ -33,9 +31,21 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
   }, []);
 
   useEffect(() => {
-    setAdmissionBatches([]); setAdmissionBatchId(""); setProgrammes([]); setCourse(""); setYears([]); setStudyYear(""); setClasses([]); setClassKey(""); setPapers([]); setPaperType(""); setPaperCode("");
+    setAdmissionBatches([]);
+    setAdmissionBatchId("");
+    setProgrammes([]);
+    setCourse("");
+    setSemesters([]);
+    setSemester("");
+    setClasses([]);
+    setClassKey("");
+    setPapers([]);
+    setPaperCode("");
     if (!degree) return;
-    setLoadingLabel("Loading batches..."); setLoading(true); setError("");
+
+    setLoadingLabel("Loading batches...");
+    setLoading(true);
+    setError("");
     api.get("/manual-attainment/admission-batches", { params: { degree } })
       .then((res) => setAdmissionBatches(res.data))
       .catch((err) => setError(err.response?.data?.message || "Failed to load batches"))
@@ -43,65 +53,108 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
   }, [degree]);
 
   useEffect(() => {
-    setProgrammes([]); setCourse(""); setYears([]); setStudyYear(""); setClasses([]); setClassKey(""); setPapers([]); setPaperType(""); setPaperCode("");
+    setProgrammes([]);
+    setCourse("");
+    setSemesters([]);
+    setSemester("");
+    setClasses([]);
+    setClassKey("");
+    setPapers([]);
+    setPaperCode("");
     if (!degree || !selectedAdmissionBatch) return;
-    setLoadingLabel("Loading programmes for the selected batch..."); setLoading(true); setError("");
-    api.get("/manual-attainment/programmes", { params: { degree, admissionYear: selectedAdmissionBatch.admissionYear } })
-      .then((res) => setProgrammes(res.data))
+
+    setLoadingLabel("Loading programmes for this batch...");
+    setLoading(true);
+    setError("");
+    api.get("/manual-attainment/programmes", {
+      params: { degree, admissionYear: selectedAdmissionBatch.admissionYear },
+    })
+      .then((res) => {
+        setProgrammes(res.data);
+        if (res.data.length === 1) setCourse(res.data[0]);
+      })
       .catch((err) => setError(err.response?.data?.message || "Failed to load programmes"))
       .finally(() => setLoading(false));
   }, [degree, admissionBatchId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    setYears([]); setStudyYear(""); setClasses([]); setClassKey(""); setPapers([]); setPaperType(""); setPaperCode("");
+    setSemesters([]);
+    setSemester("");
+    setClasses([]);
+    setClassKey("");
+    setPapers([]);
+    setPaperCode("");
     if (!degree || !course || !selectedAdmissionBatch) return;
-    setLoadingLabel("Loading available years..."); setLoading(true); setError("");
-    api.get("/manual-attainment/years", { params: { degree, course, admissionYear: selectedAdmissionBatch.admissionYear } })
-      .then((res) => setYears(res.data))
-      .catch((err) => setError(err.response?.data?.message || "Failed to load course years"))
+
+    setLoadingLabel("Finding available semesters and class sections...");
+    setLoading(true);
+    setError("");
+    Promise.all([
+      api.get("/manual-attainment/semesters", {
+        params: { degree, course, admissionYear: selectedAdmissionBatch.admissionYear },
+      }),
+      api.get("/manual-attainment/classes", {
+        params: { degree, course, admissionYear: selectedAdmissionBatch.admissionYear },
+      }),
+    ])
+      .then(([semesterRes, classRes]) => {
+        setSemesters(semesterRes.data);
+        setClasses(classRes.data);
+        if (semesterRes.data.length === 1) setSemester(String(semesterRes.data[0]));
+        if (classRes.data.length === 1) setClassKey(classRes.data[0].key);
+      })
+      .catch((err) => setError(err.response?.data?.message || "Failed to load semester/class information"))
       .finally(() => setLoading(false));
   }, [degree, course, admissionBatchId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    setClasses([]); setClassKey(""); setPapers([]); setPaperType(""); setPaperCode("");
-    if (!degree || !course || !studyYear || !selectedAdmissionBatch) return;
-    setLoadingLabel("Loading classes..."); setLoading(true); setError("");
-    api.get("/manual-attainment/classes", { params: { degree, course, year: studyYear, admissionYear: selectedAdmissionBatch.admissionYear } })
-      .then((res) => setClasses(res.data))
-      .catch((err) => setError(err.response?.data?.message || "Failed to load classes"))
-      .finally(() => setLoading(false));
-  }, [degree, course, studyYear, admissionBatchId]); // eslint-disable-line react-hooks/exhaustive-deps
+    setPapers([]);
+    setPaperCode("");
+    if (!semester || !selectedClass || !selectedAdmissionBatch) return;
 
-  useEffect(() => {
-    setPapers([]); setPaperType(""); setPaperCode("");
-    if (!selectedClass || !selectedAdmissionBatch) return;
-    setLoadingLabel("Finding papers written by this class..."); setLoading(true); setError("");
-    api.get("/manual-attainment/papers", { params: { course, year: studyYear, section: selectedClass.section, admissionYear: selectedAdmissionBatch.admissionYear } })
-      .then((res) => setPapers(res.data))
-      .catch((err) => setError(err.response?.data?.message || "Failed to load paper codes"))
+    setLoadingLabel(`Loading Semester ${semester} papers...`);
+    setLoading(true);
+    setError("");
+    api.get("/manual-attainment/papers", {
+      params: {
+        degree,
+        course,
+        section: selectedClass.section,
+        admissionYear: selectedAdmissionBatch.admissionYear,
+        semester: Number(semester),
+      },
+    })
+      .then((res) => {
+        setPapers(res.data);
+        if (res.data.length === 1) setPaperCode(res.data[0].paperCode);
+      })
+      .catch((err) => setError(err.response?.data?.message || "Failed to load semester papers"))
       .finally(() => setLoading(false));
-  }, [classKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [semester, classKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleNext() {
-    const paper = papers.find((item) => item.paperCode === paperCode);
-    if (!academicYear || !degree || !selectedAdmissionBatch || !course || !studyYear || !selectedClass || !paperType || !paper) {
-      setError("Please complete every selection, including Batch.");
+    if (!academicYear || !degree || !selectedAdmissionBatch || !course || !semester || !selectedClass || !selectedPaper) {
+      setError("Please complete the selection before continuing.");
       return;
     }
 
-    setLoadingLabel("Importing selected batch students, ESE and CIA marks..."); setLoading(true); setError("");
+    setLoadingLabel("Importing students, ESE and CIA marks from ERP...");
+    setLoading(true);
+    setError("");
     try {
       const res = await api.post("/manual-attainment/prepare", {
         degree,
         admissionBatchId: selectedAdmissionBatch._id,
         admissionYear: selectedAdmissionBatch.admissionYear,
         course,
-        year: Number(studyYear),
+        year: Number(selectedClass.studyYear),
         section: selectedClass.section,
-        paperCode: paper.paperCode,
-        paperName: paper.paperName,
-        paperType: paper.paperType,
+        semester: Number(semester),
+        paperCode: selectedPaper.paperCode,
+        paperName: selectedPaper.paperName,
+        paperType: selectedPaper.paperType,
       });
+
       const { batch, allocation, imported } = res.data;
       let resumeStep = 1;
       let completed = false;
@@ -116,7 +169,9 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
         else if (!p.ciaEntered) resumeStep = 5;
         else if (!p.computed) resumeStep = 6;
         else resumeStep = 7;
-      } catch { resumeStep = 1; }
+      } catch {
+        resumeStep = 1;
+      }
 
       updateContext({
         academicYear: academicYear._id,
@@ -126,7 +181,8 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
         admissionYear: selectedAdmissionBatch.admissionYear,
         programme: degree,
         course,
-        studyYear,
+        studyYear: selectedClass.studyYear,
+        semester: Number(semester),
         batch: batch._id,
         batchLabel: batch.displayName,
         allocation,
@@ -136,72 +192,150 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
       onNext(resumeStep);
     } catch (err) {
       setError(err.response?.data?.message || "Failed to prepare attainment data");
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
     <section className="workflow-panel">
       <div className="section-heading-row">
         <div>
-          <span className="section-kicker">STEP 01 · CURRENT ACADEMIC YEAR</span>
-          <h2>Manual Class & Paper Selection</h2>
-          <p>Select the admission batch first. The next fields show only matching ERP students, classes and papers.</p>
+          <span className="section-kicker">STEP 01 · QUICK PAPER SELECTION</span>
+          <h2>Select Batch, Semester & Paper</h2>
+          <p>
+            Choose the batch once, then select the semester. Only papers from that semester are shown, so there are fewer clicks and no manual academic-year selection.
+          </p>
         </div>
-        <span className="status-chip status-success">{academicYear?.year || "Loading..."}</span>
+        <span className="status-chip status-success">AY {academicYear?.year || "Loading..."}</span>
       </div>
 
       <div className="grid md:grid-cols-3 gap-5">
         <Field label="Degree">
           <select value={degree} onChange={(e) => setDegree(e.target.value)} className="input-field">
-            <option value="">-- Select UG / PG --</option><option value="UG">UG</option><option value="PG">PG</option>
+            <option value="">-- Select UG / PG --</option>
+            <option value="UG">UG</option>
+            <option value="PG">PG</option>
           </select>
         </Field>
-        <Field label="Batch">
-          <select value={admissionBatchId} onChange={(e) => setAdmissionBatchId(e.target.value)} disabled={!admissionBatches.length} className="input-field disabled:bg-gray-100">
-            <option value="">-- Select Batch --</option>{admissionBatches.map((item) => <option key={item._id} value={item._id}>{item.label}</option>)}
+
+        <Field label="Admission Batch">
+          <select
+            value={admissionBatchId}
+            onChange={(e) => setAdmissionBatchId(e.target.value)}
+            disabled={!admissionBatches.length}
+            className="input-field disabled:bg-gray-100"
+          >
+            <option value="">-- Select Batch --</option>
+            {admissionBatches.map((item) => <option key={item._id} value={item._id}>{item.label}</option>)}
           </select>
         </Field>
-        <Field label="Academic Year">
-          <input value={academicYear?.year || ""} readOnly className="input-field bg-gray-50" />
-        </Field>
+
         <Field label="Programme">
-          <select value={course} onChange={(e) => setCourse(e.target.value)} disabled={!programmes.length} className="input-field disabled:bg-gray-100">
-            <option value="">-- Select Programme --</option>{programmes.map((item) => <option key={item} value={item}>{item}</option>)}
+          <select
+            value={course}
+            onChange={(e) => setCourse(e.target.value)}
+            disabled={!programmes.length}
+            className="input-field disabled:bg-gray-100"
+          >
+            <option value="">-- Select Programme --</option>
+            {programmes.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
         </Field>
-        <Field label="Year of Study">
-          <select value={studyYear} onChange={(e) => setStudyYear(e.target.value)} disabled={!years.length} className="input-field disabled:bg-gray-100">
-            <option value="">-- Select Year --</option>{years.map((item) => <option key={item} value={item}>Year {item}</option>)}
-          </select>
-        </Field>
-        <Field label="Class / Section">
-          <select value={classKey} onChange={(e) => setClassKey(e.target.value)} disabled={!classes.length} className="input-field disabled:bg-gray-100">
-            <option value="">-- Select Class --</option>{classes.map((item) => <option key={item.key} value={item.key}>{item.displayName} ({item.studentCount} students)</option>)}
-          </select>
-        </Field>
-        <Field label="Paper Type">
-          <select value={paperType} onChange={(e) => { setPaperType(e.target.value); setPaperCode(""); }} disabled={!paperTypes.length} className="input-field disabled:bg-gray-100">
-            <option value="">-- Select Paper Type --</option>{paperTypes.map((item) => <option key={item} value={item}>{item}</option>)}
-          </select>
-        </Field>
-        <div className="md:col-span-2">
-          <Field label="Paper Code">
-            <select value={paperCode} onChange={(e) => setPaperCode(e.target.value)} disabled={!paperType || !filteredPapers.length} className="input-field disabled:bg-gray-100">
-              <option value="">-- Select Paper Code --</option>{filteredPapers.map((item) => <option key={item.paperCode} value={item.paperCode}>{item.paperCode} · {item.paperName}</option>)}
-            </select>
-          </Field>
+      </div>
+
+      <div className="mt-5">
+        <label className="block text-sm font-medium text-gray-700 mb-2">Semester</label>
+        <div className="flex flex-wrap gap-2 min-h-[42px] items-center">
+          {!course && <span className="text-sm text-gray-400">Select a programme to see semesters</span>}
+          {course && !loading && semesters.length === 0 && <span className="text-sm text-gray-400">No semesters found</span>}
+          {semesters.map((item) => {
+            const active = Number(semester) === Number(item);
+            return (
+              <button
+                key={item}
+                type="button"
+                onClick={() => setSemester(String(item))}
+                className={`px-4 py-2 rounded-lg border text-sm font-semibold transition ${
+                  active
+                    ? "bg-brand text-white border-brand shadow-sm"
+                    : "bg-white text-gray-700 border-gray-200 hover:border-brand hover:text-brand"
+                }`}
+              >
+                Sem {item}
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      {loading && <div className="mt-5 flex items-center gap-2 text-sm text-gray-600"><span className="inline-block h-4 w-4 rounded-full border-2 border-brand border-t-transparent animate-spin" />{loadingLabel}</div>}
-      {error && <p className="alert-error mt-5">{error}</p>}
-      {!loading && selectedClass && papers.length === 0 && <p className="alert-error mt-5">No written paper records were found for this class.</p>}
+      <div className="grid md:grid-cols-2 gap-5 mt-5">
+        <Field label="Class / Section">
+          <select
+            value={classKey}
+            onChange={(e) => setClassKey(e.target.value)}
+            disabled={!classes.length}
+            className="input-field disabled:bg-gray-100"
+          >
+            <option value="">-- Select Class --</option>
+            {classes.map((item) => (
+              <option key={item.key} value={item.key}>{item.displayName} · {item.studentCount} students</option>
+            ))}
+          </select>
+        </Field>
 
-      <div className="workflow-actions"><span /><button onClick={handleNext} disabled={loading || !paperCode} className="btn btn-primary">Prepare Attainment →</button></div>
+        <Field label={semester ? `Semester ${semester} Paper` : "Paper"}>
+          <select
+            value={paperCode}
+            onChange={(e) => setPaperCode(e.target.value)}
+            disabled={!semester || !selectedClass || !papers.length}
+            className="input-field disabled:bg-gray-100"
+          >
+            <option value="">-- Select Paper --</option>
+            {papers.map((item) => (
+              <option key={item.paperCode} value={item.paperCode}>
+                {item.paperCode} · {item.paperName} · {item.paperType}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+
+      {selectedPaper && (
+        <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+          <strong className="text-gray-900">{selectedPaper.paperCode}</strong>
+          <span className="text-gray-700">{selectedPaper.paperName}</span>
+          <span className="text-xs font-semibold px-2 py-1 rounded-full bg-white border border-blue-100 text-brand">{selectedPaper.paperType}</span>
+          <span className="text-xs text-gray-500">Semester {semester}</span>
+        </div>
+      )}
+
+      {loading && (
+        <div className="mt-5 flex items-center gap-2 text-sm text-gray-600">
+          <span className="inline-block h-4 w-4 rounded-full border-2 border-brand border-t-transparent animate-spin" />
+          {loadingLabel}
+        </div>
+      )}
+      {error && <p className="alert-error mt-5">{error}</p>}
+      {!loading && semester && selectedClass && papers.length === 0 && (
+        <p className="alert-error mt-5">No Semester {semester} paper records were found for this class.</p>
+      )}
+
+      <div className="workflow-actions">
+        <span className="text-xs text-gray-400 hidden sm:block">Academic year is handled automatically.</span>
+        <button onClick={handleNext} disabled={loading || !paperCode} className="btn btn-primary">
+          Prepare Attainment →
+        </button>
+      </div>
     </section>
   );
 }
 
 function Field({ label, children }) {
-  return <div><label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>{children}</div>;
+  return (
+    <div>
+      <label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>
+      {children}
+    </div>
+  );
 }
