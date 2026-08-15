@@ -1,0 +1,13 @@
+Question-wise CIA update validation
+===================================
+
+- Backend changed JavaScript files: node --check passed.
+- Client: all JS/JSX source files parsed successfully with @babel/parser and all relative imports resolved.
+- Supplied English workbook smoke check passed:
+  * 54 ODD T1/T2 mapping rows
+  * 54 EVEN T1/T2 mapping rows
+  * 15,633 ODD question-mark rows
+  * 13,879 EVEN question-mark rows
+- Formula pipeline was smoke-tested with a real paper from the supplied English workbook.
+
+Full Vite production build was not run in this Linux workspace because the uploaded project contained Windows node_modules and therefore lacked Rollup's Linux optional native package. The clean ZIP excludes node_modules; run npm install on the target Windows system before npm run dev/build.

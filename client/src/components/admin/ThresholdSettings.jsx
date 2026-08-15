@@ -44,7 +44,7 @@ export default function ThresholdSettings() {
 
   async function save() {
     setSaving(true); setError(""); setMessage("");
-    try { await api.post(`/settings/${allocationId}`, form); setMessage("Threshold settings fixed successfully. Staff can now continue to Student List."); }
+    try { await api.post(`/settings/${allocationId}`, form); setMessage("Threshold settings fixed successfully. Staff can now continue to ESE mark verification."); }
     catch (e) { setError(e.response?.data?.message || "Failed to save threshold settings"); }
     finally { setSaving(false); }
   }
@@ -63,7 +63,7 @@ export default function ThresholdSettings() {
         <label className="admin-field"><span>CIA Weight %</span><input type="number" min="0" max="100" className="input-field" value={form.internalWeight} onChange={(e) => setInternal(e.target.value)} /><small>Internal contribution</small></label>
         <label className="admin-field"><span>ESE Weight %</span><input disabled className="input-field" value={form.externalWeight} /><small>Automatically balances to 100%</small></label>
       </div>
-      <div className="subsection-title"><div><h3>CIA Components</h3><p>These columns will be used during CIA mark entry and Excel upload.</p></div><button className="inline-action" onClick={addComponent}>＋ Add component</button></div>
+      <div className="subsection-title"><div><h3>CIA Components</h3><p>These components define the CIA structure used by the administrator for CIA mark entry.</p></div><button className="inline-action" onClick={addComponent}>＋ Add component</button></div>
       <div className="table-shell"><table className="pro-table"><thead><tr><th>Column Key</th><th>Label</th><th>CO Start</th><th>CO End</th><th>Max Marks</th><th>Action</th></tr></thead><tbody>{form.ciaComponents.map((c, i) => <tr key={i}><td><input className="table-input" value={c.key} onChange={(e) => updateComponent(i, "key", e.target.value)} /></td><td><input className="table-input" value={c.label} onChange={(e) => updateComponent(i, "label", e.target.value)} /></td><td><input type="number" className="table-input compact" value={c.coStart} onChange={(e) => updateComponent(i, "coStart", e.target.value)} /></td><td><input type="number" className="table-input compact" value={c.coEnd} onChange={(e) => updateComponent(i, "coEnd", e.target.value)} /></td><td><input type="number" className="table-input compact" value={c.maxMarks} onChange={(e) => updateComponent(i, "maxMarks", e.target.value)} /></td><td><button className="table-action danger" onClick={() => removeComponent(i)}>Remove</button></td></tr>)}</tbody></table></div>
       {error && <p className="alert-error mt-4">{error}</p>}{message && <p className="alert-success mt-4">{message}</p>}
       <div className="flex justify-end mt-6"><button onClick={save} disabled={saving} className="btn btn-primary">{saving ? "Saving..." : "Save & Fix Thresholds"}</button></div>

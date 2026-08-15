@@ -12,9 +12,10 @@ const mongoose = require("mongoose");
  * internalWeight / externalWeight — how much CIA ("Internal") vs ESE
  *   ("External") count toward each CO's final combined attainment
  *   (must add up to 100).
- * ciaComponents — the CIA components staff will bulk-upload marks for
- *   (e.g. T1, T2, Seminar, Assignment, Innovative), each mapped to the
- *   range of COs it assesses.
+ * ciaComponents — activity-to-CO coverage used in the question-wise CIA
+ *   flow. T1/T2 question mappings come from the imported CIA workbook;
+ *   Seminar/Assignment/Innovative marks and their reviewed maxima come from
+ *   MongoDB source datasets. The settings retain a fallback max for legacy data.
  */
 const CIAComponentSchema = new mongoose.Schema(
   {
@@ -39,10 +40,10 @@ const AttainmentSettingsSchema = new mongoose.Schema(
     ciaComponents: {
       type: [CIAComponentSchema],
       default: () => [
-        { key: "T1", label: "T1", coStart: 1, coEnd: 3, maxMarks: 20 },
-        { key: "T2", label: "T2", coStart: 4, coEnd: 6, maxMarks: 20 },
-        { key: "Seminar", label: "Seminar", coStart: 1, coEnd: 6, maxMarks: 10 },
-        { key: "Assignment", label: "Assignment", coStart: 1, coEnd: 6, maxMarks: 10 },
+        { key: "T1", label: "T1 Question-wise", coStart: 1, coEnd: 3, maxMarks: 50 },
+        { key: "Assignment", label: "Assignment", coStart: 1, coEnd: 3, maxMarks: 10 },
+        { key: "T2", label: "T2 Question-wise", coStart: 4, coEnd: 6, maxMarks: 50 },
+        { key: "Seminar", label: "Seminar", coStart: 4, coEnd: 6, maxMarks: 10 },
         { key: "Innovative", label: "Innovative", coStart: 1, coEnd: 6, maxMarks: 10 },
       ],
     },

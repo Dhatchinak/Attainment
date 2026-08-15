@@ -1,73 +1,120 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import * as XLSX from "xlsx";
 import { useAuth } from "../context/AuthContext";
 import api from "../api/axios";
+import { isQuestionWiseAcademicYear } from "../utils/workflowMode";
 
 const STATUS_META = {
-  completed: {
-    label: "Completed",
-    badgeClass: "bg-teal-50 text-teal-700 border border-teal-100",
-    buttonLabel: "View / Edit",
-    buttonClass: "btn-primary",
-    icon: "✓",
-  },
-  in_progress: {
-    label: "Resume",
-    badgeClass: "bg-amber-50 text-amber-700 border border-amber-100",
-    buttonLabel: "Resume",
-    buttonClass: "btn-accent",
-    icon: "⏳",
-  },
-  not_started: {
-    label: "Not started",
-    badgeClass: "bg-slate-50 text-slate-500 border border-slate-100",
-    buttonLabel: "Start",
-    buttonClass: "btn-primary",
-    icon: "▶",
-  },
+  completed: { label: "Completed", badgeClass: "status-success", buttonLabel: "View Report", icon: "✓" },
+  in_progress: { label: "In Progress", badgeClass: "status-warning", buttonLabel: "Resume", icon: "↻" },
+  not_started: { label: "Not Started", badgeClass: "status-neutral", buttonLabel: "Start", icon: "→" },
 };
 
-const STEP_ORDER = ["matrixLocked", "settingsSet", "studentsUploaded", "eseEntered", "ciaEntered", "computed"];
+const QUESTION_STEP_ORDER = ["matrixLocked", "settingsSet", "eseEntered", "t1Verified", "t2Verified", "activitiesVerified", "computed"];
+const LEGACY_STEP_ORDER = ["matrixLocked", "settingsSet", "eseEntered", "ciaEntered", "computed"];
+
+const QUESTION_STEP_LABELS = {
+  matrixLocked: "CO-PO-PSO Matrix",
+  settingsSet: "Thresholds",
+  eseEntered: "ESE Marks",
+  t1Verified: "T1 Question-wise",
+  t2Verified: "T2 Question-wise",
+  activitiesVerified: "CIA Activities",
+  computed: "CO Calculation",
+};
+
+const LEGACY_STEP_LABELS = {
+  matrixLocked: "CO-PO-PSO Matrix",
+  settingsSet: "Thresholds",
+  eseEntered: "ESE Marks",
+  ciaEntered: "CIA Marks",
+  computed: "Consolidated CO",
+};
+
+function isQuestionWiseItem(item) {
+  if (item?.workflowMode) return item.workflowMode === "question_wise";
+  return isQuestionWiseAcademicYear(item?.academicYear?.year);
+}
+
+function workflowFor(item) {
+  return isQuestionWiseItem(item)
+    ? { mode: "Question-wise CIA", order: QUESTION_STEP_ORDER, labels: QUESTION_STEP_LABELS }
+    : { mode: "Legacy CIA", order: LEGACY_STEP_ORDER, labels: LEGACY_STEP_LABELS };
+}
+
+function cleanCourseName(value = "") {
+  return String(value)
+    .replace(/^(UG|PG)-/i, "")
+    .replace(/-/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function classLabel(batch) {
+  if (!batch) return "Class not available";
+  const course = cleanCourseName(batch.course || "");
+  const year = batch.year ? `Year ${batch.year}` : "";
+  const section = batch.section && batch.section !== "NIL" ? `Section ${batch.section}` : "";
+  const built = [year, course, section].filter(Boolean).join(" · ");
+  return built || batch.displayName || "Class";
+}
+
+function batchYear(batch) {
+  if (batch?.admissionYear) return String(batch.admissionYear);
+  const match = String(batch?.displayName || "").match(/20\d{2}/);
+  return match?.[0] || "—";
+}
+
+function yesNo(value) {
+  return value ? "YES" : "NO";
+}
+
+function currentStage(item) {
+  if (item?.status === "completed" || item?.progress?.completed) return "Completed";
+  const workflow = workflowFor(item);
+  const pendingKey = workflow.order.find((key) => !item?.progress?.[key]);
+  return pendingKey ? workflow.labels[pendingKey] : "Final Report";
+}
 
 export default function Overview() {
   const { staff, logout } = useAuth();
   const navigate = useNavigate();
-
   const [academicYears, setAcademicYears] = useState([]);
   const [academicYear, setAcademicYear] = useState("");
-
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
-
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [search, setSearch] = useState("");
   const [deptItems, setDeptItems] = useState(null);
   const [deptLoading, setDeptLoading] = useState(false);
   const [deptError, setDeptError] = useState("");
 
   useEffect(() => {
     api.get("/meta/academic-years").then((res) => {
-      setAcademicYears(res.data);
-      // Default to the most recent active year so the list isn't empty on first load.
-      if (res.data.length > 0) setAcademicYear(res.data[0]._id);
+      const years = res.data || [];
+      setAcademicYears(years);
+      const preferred = years.find((year) => year.year === "2025-2026") || years[0];
+      if (preferred) setAcademicYear(preferred._id);
     });
   }, []);
+
+  const selectedYear = academicYears.find((year) => year._id === academicYear);
 
   const loadOverview = useCallback(() => {
     setLoading(true);
     setError("");
     api
       .get("/attainment/overview", { params: academicYear ? { academicYear } : {} })
-      .then((res) => setItems(res.data))
+      .then((res) => setItems(res.data || []))
       .catch(() => setError("Failed to load your classes."))
       .finally(() => setLoading(false));
   }, [academicYear]);
 
-  useEffect(() => {
-    loadOverview();
-  }, [loadOverview]);
+  useEffect(() => { loadOverview(); }, [loadOverview]);
 
   useEffect(() => {
     if (!staff?.isHOD || !academicYear) {
@@ -79,9 +126,40 @@ export default function Overview() {
     api
       .get("/attainment/department-overview", { params: { academicYear } })
       .then((res) => setDeptItems(res.data))
-      .catch(() => setDeptError("Failed to load your department's attainment overview."))
+      .catch(() => setDeptError("Failed to load the department attainment overview."))
       .finally(() => setDeptLoading(false));
   }, [staff?.isHOD, academicYear]);
+
+  const summary = useMemo(() => {
+    const completed = items.filter((item) => item.status === "completed").length;
+    const inProgress = items.filter((item) => item.status === "in_progress").length;
+    const notStarted = items.filter((item) => item.status === "not_started").length;
+    const semesters = new Set(items.map((item) => item.allocation?.semester).filter(Boolean)).size;
+    const completion = items.length ? Math.round((completed / items.length) * 100) : 0;
+    return { total: items.length, completed, inProgress, notStarted, semesters, pending: inProgress + notStarted, completion };
+  }, [items]);
+
+  const visibleItems = useMemo(() => items.filter((item) => {
+    if (statusFilter !== "all" && item.status !== statusFilter) return false;
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    const text = [
+      item.allocation?.paperCode,
+      item.allocation?.paperName,
+      classLabel(item.batch),
+      batchYear(item.batch),
+      item.allocation?.semester,
+    ].join(" ").toLowerCase();
+    return text.includes(q);
+  }), [items, statusFilter, search]);
+
+  const grouped = useMemo(() => Object.entries(
+    visibleItems.reduce((groups, item) => {
+      const semester = item.allocation?.semester ?? "—";
+      (groups[semester] = groups[semester] || []).push(item);
+      return groups;
+    }, {})
+  ).sort((a, b) => Number(a[0]) - Number(b[0])), [visibleItems]);
 
   function doLogout() {
     logout();
@@ -92,9 +170,11 @@ export default function Overview() {
     navigate("/dashboard", {
       state: {
         academicYear: item.academicYear?._id,
+        academicYearLabel: item.academicYear?.year,
         programme: item.batch?.programme,
         batch: item.batch?._id,
-        batchLabel: item.batch?.displayName,
+        batchLabel: classLabel(item.batch),
+        admissionYear: item.batch?.admissionYear,
         allocation: item.allocation,
         completed: item.status === "completed",
         initialStep: item.resumeStep,
@@ -103,14 +183,10 @@ export default function Overview() {
     });
   }
 
-  function startFresh() {
-    // No context — lets the staff pick Academic Year / Programme / Semester /
-    // Batch / Paper manually (e.g. a brand-new class not synced yet).
+  function addPreviousBatch() {
     navigate("/dashboard", { state: null });
   }
 
-  // One ERP profile request is enough. The server removes repeated timetable
-  // day/hour rows and derives each paper's real semester from its paper code.
   async function syncClassesForYear() {
     if (!academicYear) return;
     setSyncing(true);
@@ -119,8 +195,8 @@ export default function Overview() {
       const { data } = await api.post("/meta/sync-my-classes", { academicYear });
       const removed = Number(data.duplicatesRemoved || 0) + Number(data.emptyDuplicateBatchesRemoved || 0);
       setSyncMessage(
-        `Synced ${data.uniqueClassPapers || 0} unique class-paper${data.uniqueClassPapers === 1 ? "" : "s"}` +
-          (removed ? ` and removed ${removed} old duplicate record${removed === 1 ? "" : "s"}.` : ".")
+        `Updated ${data.uniqueClassPapers || 0} unique class-paper${data.uniqueClassPapers === 1 ? "" : "s"}` +
+        (removed ? ` and removed ${removed} duplicate record${removed === 1 ? "" : "s"}.` : ".")
       );
       loadOverview();
     } catch (err) {
@@ -130,228 +206,243 @@ export default function Overview() {
     }
   }
 
+  function downloadChecklist() {
+    if (!items.length) return;
+    const yearLabel = selectedYear?.year || "Academic Year";
+    const generated = new Date();
+    const staffName = [staff?.salute, staff?.name].filter(Boolean).join(" ");
+
+    const summaryRows = [
+      ["BISHOP HEBER COLLEGE (AUTONOMOUS)"],
+      ["CO-PO-PSO ATTAINMENT - STAFF COMPLETION CHECKLIST"],
+      [],
+      ["Academic Year", yearLabel],
+      ["Staff", staffName],
+      ["Department", staff?.department_name || ""],
+      ["Generated On", generated.toLocaleString()],
+      [],
+      ["Total Papers", summary.total],
+      ["Semesters", summary.semesters],
+      ["Completed", summary.completed],
+      ["In Progress", summary.inProgress],
+      ["Not Started", summary.notStarted],
+      ["Completion %", `${summary.completion}%`],
+      [],
+      ["Submission Note", "This checklist shows the live completion status of papers handled by the staff member for HOD verification."],
+    ];
+
+    const checklistHeader = [
+      "S.No", "Semester", "Batch", "Academic Year", "Class", "Paper Code", "Paper Title", "CIA Method", "Overall Status",
+      "CO-PO-PSO Matrix", "Thresholds", "ESE Marks", "T1 Question-wise", "T2 Question-wise", "CIA Activities", "Legacy CIA Marks", "CO Calculation",
+      "Final Completed", "HOD Verification / Remarks",
+    ];
+    const checklistRows = items
+      .slice()
+      .sort((a, b) => Number(a.allocation?.semester || 0) - Number(b.allocation?.semester || 0) || String(a.allocation?.paperCode).localeCompare(String(b.allocation?.paperCode)))
+      .map((item, index) => {
+        const qwise = isQuestionWiseItem(item);
+        return [
+          index + 1,
+          item.allocation?.semester || "",
+          batchYear(item.batch),
+          item.academicYear?.year || yearLabel,
+          classLabel(item.batch),
+          item.allocation?.paperCode || "",
+          item.allocation?.paperName || "",
+          qwise ? "Question-wise CIA" : "Legacy CIA",
+          (STATUS_META[item.status] || STATUS_META.not_started).label,
+          yesNo(item.progress?.matrixLocked),
+          yesNo(item.progress?.settingsSet),
+          yesNo(item.progress?.eseEntered),
+          qwise ? yesNo(item.progress?.t1Verified) : "N/A",
+          qwise ? yesNo(item.progress?.t2Verified) : "N/A",
+          qwise ? yesNo(item.progress?.activitiesVerified) : "N/A",
+          qwise ? "N/A" : yesNo(item.progress?.ciaEntered),
+          yesNo(item.progress?.computed),
+          yesNo(item.progress?.completed),
+          "",
+        ];
+      });
+
+    const wb = XLSX.utils.book_new();
+    const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+    wsSummary["!cols"] = [{ wch: 25 }, { wch: 72 }];
+    const wsChecklist = XLSX.utils.aoa_to_sheet([checklistHeader, ...checklistRows]);
+    wsChecklist["!cols"] = [
+      { wch: 7 }, { wch: 10 }, { wch: 10 }, { wch: 15 }, { wch: 28 }, { wch: 16 }, { wch: 38 }, { wch: 18 }, { wch: 16 },
+      { wch: 18 }, { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 18 }, { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 16 }, { wch: 30 },
+    ];
+    wsChecklist["!autofilter"] = { ref: `A1:${XLSX.utils.encode_col(checklistHeader.length - 1)}${checklistRows.length + 1}` };
+    XLSX.utils.book_append_sheet(wb, wsSummary, "Submission Summary");
+    XLSX.utils.book_append_sheet(wb, wsChecklist, "Class Checklist");
+    XLSX.writeFile(wb, `Attainment_Checklist_${yearLabel.replace(/[^0-9A-Za-z-]/g, "_")}.xlsx`);
+  }
+
   return (
     <div className="min-h-screen">
-      <header className="bg-white/90 backdrop-blur border-b border-gray-100">
-        <div className="max-w-[1380px] mx-auto px-5 py-3.5 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-lg bg-white border border-gray-100 flex items-center justify-center p-0.5 shrink-0">
+      <header className="portal-header">
+        <div className="max-w-[1420px] mx-auto px-5 py-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="h-11 w-11 rounded-xl bg-white border border-slate-200 p-0.5 shrink-0">
               <img src="/college-logo.webp" alt="College logo" className="w-full h-full object-contain" />
             </div>
-            <div>
-              <h1 className="font-display font-semibold text-base tracking-tight text-gray-900">
-                CO-PO-PSO Attainment Portal
-              </h1>
-              <p className="text-xs text-gray-400 mt-0.5">
+            <div className="min-w-0">
+              <h1 className="font-display font-bold text-base text-slate-900 tracking-tight">CO-PO-PSO Attainment Portal</h1>
+              <p className="text-xs text-slate-500 truncate">
                 {staff?.salute} {staff?.name} · {staff?.designation} · {staff?.department_name}
-                {staff?.isHOD && (
-                  <span className="badge bg-indigo-50 text-indigo-600 border border-indigo-100 ml-2">HOD</span>
-                )}
               </p>
             </div>
           </div>
-          <button onClick={doLogout} className="btn btn-ghost">
-            Logout
-          </button>
+          <div className="flex items-center gap-2">
+            {staff?.isHOD && <span className="status-chip status-admin">HOD</span>}
+            <button onClick={doLogout} className="btn btn-ghost">Logout</button>
+          </div>
         </div>
       </header>
 
-      <main className="max-w-[1380px] mx-auto px-5 py-7">
-        <div className="card-flat p-4 mb-6 flex flex-wrap items-end gap-4">
+      <main className="max-w-[1420px] mx-auto px-5 py-7">
+        <section className="dashboard-hero">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Academic Year</label>
-            <select
-              value={academicYear}
-              onChange={(e) => setAcademicYear(e.target.value)}
-              className="input-field min-w-[160px]"
-            >
-              <option value="">-- All years --</option>
-              {academicYears.map((y) => (
-                <option key={y._id} value={y._id}>
-                  {y.year}
-                </option>
-              ))}
+            <span className="dashboard-eyebrow">ACADEMIC ATTAINMENT WORKSPACE</span>
+            <h2>Welcome, {staff?.salute} {staff?.name}</h2>
+            <p>Track every assigned paper, continue pending work, and download the completion checklist required for HOD submission.</p>
+          </div>
+          <div className="dashboard-year-card">
+            <span>Working Academic Year</span>
+            <select value={academicYear} onChange={(e) => setAcademicYear(e.target.value)}>
+              {academicYears.map((year) => <option key={year._id} value={year._id}>{year.year}</option>)}
             </select>
           </div>
-          <button onClick={syncClassesForYear} disabled={!academicYear || syncing} className="btn btn-accent">
-            {syncing ? "Fetching classes..." : "Fetch my classes for this year"}
-          </button>
-          <button onClick={startFresh} className="btn btn-ghost ml-auto">
-            + Select another class manually
-          </button>
-        </div>
-        {syncMessage && <p className="text-sm text-emerald-600 -mt-4 mb-6">{syncMessage}</p>}
+        </section>
 
-        <div className="flex items-center justify-between mb-5">
-          <div>
-            <h2 className="font-display text-xl font-bold text-gray-900 tracking-tight">Your Classes</h2>
-            <p className="text-sm text-gray-500 mt-0.5">
-              Pick up any class right where you left off, or start a fresh one.
-            </p>
+        <section className="dashboard-metrics">
+          <div className="dashboard-metric"><span>Total Papers</span><strong>{summary.total}</strong><small>Assigned in {selectedYear?.year || "selected year"}</small></div>
+          <div className="dashboard-metric dashboard-metric-success"><span>Completed</span><strong>{summary.completed}</strong><small>{summary.completion}% ready for HOD</small></div>
+          <div className="dashboard-metric dashboard-metric-warning"><span>In Progress</span><strong>{summary.inProgress}</strong><small>Continue from the saved CIA stage</small></div>
+          <div className="dashboard-metric"><span>Not Started</span><strong>{summary.notStarted}</strong><small>Attainment work not yet opened</small></div>
+        </section>
+
+        <section className="dashboard-toolbar">
+          <div className="dashboard-toolbar-group">
+            <button onClick={syncClassesForYear} disabled={!academicYear || syncing} className="btn btn-primary">
+              {syncing ? "Syncing ERP..." : "↻ Sync Current Classes"}
+            </button>
+            <button onClick={addPreviousBatch} className="btn btn-ghost">＋ Add Previous Batch / Paper</button>
+            <button onClick={downloadChecklist} disabled={!items.length} className="btn btn-ghost">↓ Download HOD Checklist (.xlsx)</button>
           </div>
-        </div>
+          <div className="dashboard-filters">
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search paper or class..." className="input-field" />
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="input-field">
+              <option value="all">All Status</option>
+              <option value="completed">Completed</option>
+              <option value="in_progress">In Progress</option>
+              <option value="not_started">Not Started</option>
+            </select>
+          </div>
+        </section>
 
-        {loading && <div className="p-8 text-center text-gray-500">Loading your classes...</div>}
-        {error && <p className="text-sm text-red-600 mb-4">{error}</p>}
+        {syncMessage && <div className="alert-success mb-5">{syncMessage}</div>}
+        {loading && <div className="loading-state">Loading your attainment dashboard...</div>}
+        {error && <p className="alert-error mb-5">{error}</p>}
 
         {!loading && !error && items.length === 0 && (
-          <div className="card-flat p-8 text-center mb-8">
-            <p className="text-gray-600 mb-4">
-              No classes found for this selection yet. Pick an Academic Year above and click{" "}
-              <strong>"Fetch my classes for this year"</strong>, or select one manually.
-            </p>
-            <button onClick={startFresh} className="btn btn-primary">
-              Select Manually
-            </button>
-          </div>
+          <section className="dashboard-empty">
+            <div className="dashboard-empty-icon">◎</div>
+            <h3>No papers are available for {selectedYear?.year || "this academic year"}</h3>
+            <p>Sync your current ERP allocation, or add a previous admission batch/paper such as a 2020–2025 batch.</p>
+            <div className="flex gap-3 justify-center flex-wrap mt-4">
+              <button onClick={syncClassesForYear} className="btn btn-primary">Sync Current Classes</button>
+              <button onClick={addPreviousBatch} className="btn btn-ghost">Add Previous Batch / Paper</button>
+            </div>
+          </section>
         )}
 
-        {!loading && !error && items.length > 0 && (
-          <div className="flex gap-3 mb-6 flex-wrap">
-            <span className="badge bg-teal-50 text-teal-700 border border-teal-100">
-              ✓ {items.filter((i) => i.status === "completed").length} Completed
-            </span>
-            <span className="badge bg-amber-50 text-amber-700 border border-amber-100">
-              ⏳ {items.filter((i) => i.status === "in_progress").length} In progress
-            </span>
-            <span className="badge bg-slate-50 text-slate-500 border border-slate-100">
-              ▶ {items.filter((i) => i.status === "not_started").length} Not started
-            </span>
-          </div>
+        {!loading && !error && items.length > 0 && visibleItems.length === 0 && (
+          <div className="dashboard-empty py-10"><h3>No papers match the current filter.</h3></div>
         )}
 
-        {Object.entries(
-          items.reduce((groups, item) => {
-            const sem = item.allocation.semester ?? "—";
-            (groups[sem] = groups[sem] || []).push(item);
-            return groups;
-          }, {})
-        )
-          .sort((a, b) => Number(a[0]) - Number(b[0]))
-          .map(([sem, semItems]) => (
-            <section key={sem} className="mb-8">
-              <div className="flex items-center gap-3 mb-3">
-                <h3 className="text-xs font-bold tracking-wide text-gray-400 uppercase">Semester {sem}</h3>
-                <div className="h-px flex-1 bg-gray-200" />
+        {!loading && !error && grouped.map(([semester, semesterItems]) => (
+          <section key={semester} className="semester-section">
+            <div className="semester-heading">
+              <div>
+                <span>SEMESTER</span>
+                <strong>{semester}</strong>
               </div>
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {semItems.map((item) => {
-                  const meta = STATUS_META[item.status] || STATUS_META.not_started;
-                  const stepsDone = STEP_ORDER.filter((k) => item.progress?.[k]).length;
-                  const pct = Math.round((stepsDone / STEP_ORDER.length) * 100);
-                  return (
-                    <div
-                      key={item.allocation._id}
-                      className="card-flat p-4 flex flex-col justify-between"
-                    >
-                      <div>
-                        <div className="flex items-start justify-between gap-2 mb-2">
-                          <h3 className="font-display font-semibold text-gray-900 leading-tight tracking-tight">
-                            {item.allocation.paperCode}
-                          </h3>
-                          <span className={`badge ${meta.badgeClass} shrink-0`}>
-                            {meta.icon} {meta.label}
-                          </span>
-                        </div>
-                        <p className="text-sm text-gray-600 mb-1 line-clamp-2">{item.allocation.paperName}</p>
-                        <p className="text-xs text-gray-400">
-                          {item.batch?.displayName}
-                          {item.academicYear?.year ? ` · ${item.academicYear.year}` : ""}
-                        </p>
-                      </div>
-                      <div className="mt-4">
-                        <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden mb-3">
-                          <div
-                            className={`h-full rounded-full transition-all ${
-                              item.status === "completed" ? "bg-teal-500" : "bg-brand"
-                            }`}
-                            style={{ width: `${pct}%` }}
-                          />
-                        </div>
-                        <button onClick={() => openAllocation(item)} className={`btn ${meta.buttonClass} w-full`}>
-                          {meta.buttonLabel}
-                        </button>
+              <p>{semesterItems.length} paper{semesterItems.length === 1 ? "" : "s"}</p>
+            </div>
+            <div className="course-card-grid">
+              {semesterItems.map((item) => {
+                const meta = STATUS_META[item.status] || STATUS_META.not_started;
+                const workflow = workflowFor(item);
+                const stepsDone = workflow.order.filter((key) => item.progress?.[key]).length;
+                const pct = item.status === "completed" ? 100 : Math.round((stepsDone / workflow.order.length) * 100);
+                return (
+                  <article key={item.allocation._id} className="course-progress-card">
+                    <div className="course-card-topline">
+                      <span className={`status-chip ${meta.badgeClass}`}>{meta.icon} {meta.label}</span>
+                      <div className="flex items-center gap-2 flex-wrap justify-end">
+                        <span className={`course-mode-chip ${isQuestionWiseItem(item) ? "is-question" : "is-legacy"}`}>{workflow.mode}</span>
+                        <span className="course-sem-chip">Sem {item.allocation.semester}</span>
                       </div>
                     </div>
-                  );
-                })}
-              </div>
-            </section>
-          ))}
+                    <div className="course-card-main">
+                      <h3>{item.allocation.paperCode}</h3>
+                      <p className="course-title">{item.allocation.paperName}</p>
+                      <p className="course-class">{classLabel(item.batch)}</p>
+                    </div>
+                    <div className="course-meta-grid">
+                      <div><span>Batch</span><strong>{batchYear(item.batch)}</strong></div>
+                      <div><span>Academic Year</span><strong>{item.academicYear?.year || selectedYear?.year || "—"}</strong></div>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 mb-3 flex items-center justify-between gap-3">
+                      <span className="text-xs text-slate-500">Current Stage</span>
+                      <strong className="text-xs text-slate-800 text-right">{currentStage(item)}</strong>
+                    </div>
+                    <div className="course-progress-row">
+                      <div className="course-progress-label"><span>Workflow Progress</span><strong>{pct}%</strong></div>
+                      <div className="course-progress-track"><div style={{ width: `${pct}%` }} /></div>
+                    </div>
+                    <button onClick={() => openAllocation(item)} className="btn btn-primary w-full">{meta.buttonLabel} →</button>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        ))}
 
         {staff?.isHOD && (
-          <div className="card-flat p-5">
-            <h2 className="text-lg font-semibold text-gray-900 mb-1">
-              Department Attainment Overview
-              <span className="badge bg-indigo-50 text-indigo-600 border border-indigo-100 ml-2">
-                {deptItems?.department_name || staff?.department_name}
-              </span>
-            </h2>
-            <p className="text-sm text-gray-500 mb-4">
-              Every class in your department for the selected academic year, and how far each staff member has
-              progressed.
-            </p>
-
-            {deptLoading && <div className="p-6 text-center text-gray-500">Loading department overview...</div>}
-            {deptError && <p className="text-sm text-red-600">{deptError}</p>}
-
+          <section className="hod-overview-card">
+            <div className="section-heading-row mb-4">
+              <div>
+                <span className="section-kicker">HOD VIEW</span>
+                <h2>Department Completion Monitor</h2>
+                <p>Live attainment status for all staff and papers in {deptItems?.department_name || staff?.department_name}.</p>
+              </div>
+            </div>
+            {deptLoading && <div className="loading-state py-8">Loading department overview...</div>}
+            {deptError && <p className="alert-error">{deptError}</p>}
             {!deptLoading && !deptError && deptItems && (
-              <>
-                <div className="flex gap-3 mb-4 flex-wrap">
-                  <span className="badge bg-teal-50 text-teal-700 border border-teal-100">
-                    ✓ Completed: {deptItems.items.filter((i) => i.status === "completed").length}
-                  </span>
-                  <span className="badge bg-amber-50 text-amber-700 border border-amber-100">
-                    ⏳ In progress: {deptItems.items.filter((i) => i.status === "in_progress").length}
-                  </span>
-                  <span className="badge bg-slate-50 text-slate-500 border border-slate-100">
-                    ▶ Not started: {deptItems.items.filter((i) => i.status === "not_started").length}
-                  </span>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-left text-gray-500 border-b">
-                        <th className="py-2 pr-4">Staff</th>
-                        <th className="py-2 pr-4">Paper</th>
-                        <th className="py-2 pr-4">Class</th>
-                        <th className="py-2 pr-4">Semester</th>
-                        <th className="py-2 pr-4">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {deptItems.items.map((item) => {
-                        const meta = STATUS_META[item.status] || STATUS_META.not_started;
-                        return (
-                          <tr key={item.allocation._id} className="border-b last:border-0">
-                            <td className="py-2 pr-4">{item.staff?.name}</td>
-                            <td className="py-2 pr-4">
-                              {item.allocation.paperCode} · {item.allocation.paperName}
-                            </td>
-                            <td className="py-2 pr-4">{item.batch?.displayName || "-"}</td>
-                            <td className="py-2 pr-4">{item.allocation.semester}</td>
-                            <td className="py-2 pr-4">
-                              <span className={`badge ${meta.badgeClass}`}>
-                                {meta.icon} {meta.label}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                      {deptItems.items.length === 0 && (
-                        <tr>
-                          <td colSpan={5} className="py-6 text-center text-gray-400">
-                            No classes found for this department in this academic year.
-                          </td>
+              <div className="table-shell">
+                <table className="pro-table">
+                  <thead><tr><th className="!text-left">Staff</th><th className="!text-left">Paper</th><th>Batch</th><th>Semester</th><th>Status</th></tr></thead>
+                  <tbody>
+                    {deptItems.items.map((item) => {
+                      const meta = STATUS_META[item.status] || STATUS_META.not_started;
+                      return (
+                        <tr key={item.allocation._id}>
+                          <td className="!text-left font-medium">{item.staff?.name}</td>
+                          <td className="!text-left"><strong>{item.allocation.paperCode}</strong><div className="text-xs text-slate-500">{item.allocation.paperName}</div></td>
+                          <td>{batchYear(item.batch)}</td>
+                          <td>{item.allocation.semester}</td>
+                          <td><span className={`status-chip ${meta.badgeClass}`}>{meta.icon} {meta.label}</span></td>
                         </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
-          </div>
+          </section>
         )}
       </main>
     </div>

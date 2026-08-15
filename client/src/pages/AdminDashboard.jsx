@@ -8,6 +8,7 @@ import AdmissionBatches from "../components/admin/AdmissionBatches";
 import Allocations from "../components/admin/Allocations";
 import UploadStudents from "../components/admin/UploadStudents";
 import AttainmentRecords from "../components/admin/AttainmentRecords";
+import CIADataImport from "../components/admin/CIADataImport";
 
 const TABS = [
   { key: "years", label: "Academic Years", Component: AcademicYears },
@@ -16,6 +17,7 @@ const TABS = [
   { key: "batches", label: "Classes", Component: Batches },
   { key: "allocations", label: "Course Allocations", Component: Allocations },
   { key: "students", label: "Upload Students", Component: UploadStudents },
+  { key: "cia-data", label: "CIA Data Import", Component: CIADataImport },
   { key: "attainment", label: "Attainment Records", Component: AttainmentRecords },
 ];
 

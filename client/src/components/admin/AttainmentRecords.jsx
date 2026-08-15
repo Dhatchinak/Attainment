@@ -1,10 +1,10 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import api from "../../api/axios";
 
 const STATUS_META = {
   completed: { label: "Completed", badgeClass: "bg-emerald-50 text-emerald-700 border border-emerald-200", icon: "✓" },
-  in_progress: { label: "In progress", badgeClass: "bg-amber-50 text-amber-700 border border-amber-200", icon: "⏳" },
-  not_started: { label: "Not started", badgeClass: "bg-gray-100 text-gray-500 border border-gray-200", icon: "▶" },
+  in_progress: { label: "In progress", badgeClass: "bg-amber-50 text-amber-700 border border-amber-200", icon: "↻" },
+  not_started: { label: "Not started", badgeClass: "bg-gray-100 text-gray-500 border border-gray-200", icon: "→" },
 };
 
 export default function AttainmentRecords() {
@@ -13,14 +13,17 @@ export default function AttainmentRecords() {
   const [departmentCode, setDepartmentCode] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [search, setSearch] = useState("");
-
   const [summary, setSummary] = useState(null);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api.get("/admin/academic-years").then((res) => setYears(res.data));
+    api.get("/admin/academic-years").then((res) => {
+      setYears(res.data || []);
+      const active = (res.data || []).find((y) => y.isActive) || res.data?.[0];
+      if (active) setAcademicYear(active._id);
+    });
   }, []);
 
   const load = useCallback(() => {
@@ -33,7 +36,7 @@ export default function AttainmentRecords() {
       .get("/admin/attainment-records", { params })
       .then((res) => {
         setSummary(res.data.summary);
-        setItems(res.data.items);
+        setItems(res.data.items || []);
       })
       .catch(() => setError("Failed to load attainment records"))
       .finally(() => setLoading(false));
@@ -41,9 +44,9 @@ export default function AttainmentRecords() {
 
   useEffect(load, [load]);
 
-  const departments = [...new Set(items.map((i) => i.staff.department_code).filter(Boolean))];
+  const departments = useMemo(() => [...new Set(items.map((i) => i.staff.department_code).filter(Boolean))], [items]);
 
-  const visible = items.filter((i) => {
+  const visible = useMemo(() => items.filter((i) => {
     if (statusFilter && i.status !== statusFilter) return false;
     if (search) {
       const s = search.toLowerCase();
@@ -51,7 +54,7 @@ export default function AttainmentRecords() {
       if (!hay.includes(s)) return false;
     }
     return true;
-  });
+  }), [items, search, statusFilter]);
 
   function downloadCSV() {
     const poKeys = [...new Set(visible.flatMap((i) => (i.poAttainment || []).map((p) => p.po)))].sort();
@@ -91,33 +94,27 @@ export default function AttainmentRecords() {
 
   return (
     <div className="card-surface p-5">
-      <div className="flex items-start justify-between gap-4 mb-1">
-        <h2 className="font-display text-lg font-bold text-gray-900 tracking-tight">Attainment Records — College-wide</h2>
-        <button onClick={downloadCSV} disabled={visible.length === 0} className="btn btn-primary shrink-0">
-          ⬇ Download Full Attainment (CSV)
-        </button>
+      <div className="flex items-start justify-between gap-4 mb-1 flex-wrap">
+        <div>
+          <h2 className="font-display text-lg font-bold text-gray-900 tracking-tight">Attainment Records — College-wide</h2>
+          <p className="text-sm text-gray-500 mt-1">Monitor question-wise CIA verification, calculation progress and final completion for every paper.</p>
+        </div>
+        <button onClick={downloadCSV} disabled={visible.length === 0} className="btn btn-primary shrink-0">↓ Download Full Report (CSV)</button>
       </div>
-      <p className="text-sm text-gray-500 mb-5">
-        Every staff, every paper, every class — with live CO-PO-PSO attainment progress.
-      </p>
 
-      <div className="flex flex-wrap gap-4 mb-5">
+      <div className="flex flex-wrap gap-4 my-5">
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Academic Year</label>
           <select value={academicYear} onChange={(e) => setAcademicYear(e.target.value)} className="input-field">
             <option value="">All years</option>
-            {years.map((y) => (
-              <option key={y._id} value={y._id}>{y.year}</option>
-            ))}
+            {years.map((y) => <option key={y._id} value={y._id}>{y.year}</option>)}
           </select>
         </div>
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Department</label>
           <select value={departmentCode} onChange={(e) => setDepartmentCode(e.target.value)} className="input-field">
             <option value="">All departments</option>
-            {departments.map((d) => (
-              <option key={d} value={d}>{d}</option>
-            ))}
+            {departments.map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
         </div>
         <div>
@@ -129,14 +126,9 @@ export default function AttainmentRecords() {
             <option value="not_started">Not started</option>
           </select>
         </div>
-        <div className="flex-1 min-w-[200px]">
+        <div className="flex-1 min-w-[220px]">
           <label className="block text-xs font-medium text-gray-600 mb-1">Search</label>
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Staff, paper code, paper name, class..."
-            className="input-field w-full"
-          />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Staff, paper code, paper name, class..." className="input-field w-full" />
         </div>
       </div>
 
@@ -144,56 +136,49 @@ export default function AttainmentRecords() {
         <div className="flex gap-3 mb-5 flex-wrap">
           <span className="badge bg-gray-100 text-gray-700 border border-gray-200">Total: {summary.total}</span>
           <span className="badge bg-emerald-50 text-emerald-700 border border-emerald-200">✓ Completed: {summary.completed}</span>
-          <span className="badge bg-amber-50 text-amber-700 border border-amber-200">⏳ In progress: {summary.in_progress}</span>
-          <span className="badge bg-gray-100 text-gray-500 border border-gray-200">▶ Not started: {summary.not_started}</span>
+          <span className="badge bg-amber-50 text-amber-700 border border-amber-200">↻ In progress: {summary.in_progress}</span>
+          <span className="badge bg-gray-100 text-gray-500 border border-gray-200">→ Not started: {summary.not_started}</span>
         </div>
       )}
 
-      {loading && <div className="p-8 text-center text-gray-500">Loading attainment records...</div>}
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {loading && <div className="loading-state">Loading attainment records...</div>}
+      {error && <p className="alert-error">{error}</p>}
 
       {!loading && !error && (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+        <div className="table-shell">
+          <table className="pro-table">
             <thead>
-              <tr className="text-left text-gray-500 border-b">
-                <th className="py-2 pr-4">Staff</th>
-                <th className="py-2 pr-4">Department</th>
-                <th className="py-2 pr-4">Paper</th>
-                <th className="py-2 pr-4">Class</th>
-                <th className="py-2 pr-4">Semester</th>
-                <th className="py-2 pr-4">Academic Year</th>
-                <th className="py-2 pr-4">Status</th>
+              <tr>
+                <th className="!text-left">Staff</th>
+                <th className="!text-left">Department</th>
+                <th className="!text-left">Paper</th>
+                <th className="!text-left">Class</th>
+                <th>Semester</th>
+                <th>Academic Year</th>
+                <th>Status</th>
               </tr>
             </thead>
             <tbody>
               {visible.map((item) => {
                 const meta = STATUS_META[item.status] || STATUS_META.not_started;
                 return (
-                  <tr key={item.allocation._id} className="border-b last:border-0 odd:bg-gray-50/50 hover:bg-brand-50/40 transition-colors">
-                    <td className="py-2 pr-4">{item.staff.name}</td>
-                    <td className="py-2 pr-4">{item.staff.department_name || item.staff.department_code || "-"}</td>
-                    <td className="py-2 pr-4">{item.allocation.paperCode} · {item.allocation.paperName}</td>
-                    <td className="py-2 pr-4">{item.batch?.displayName || "-"}</td>
-                    <td className="py-2 pr-4">{item.allocation.semester}</td>
-                    <td className="py-2 pr-4">{item.academicYear?.year || "-"}</td>
-                    <td className="py-2 pr-4">
-                      <span className={`badge ${meta.badgeClass}`}>{meta.icon} {meta.label}</span>
-                    </td>
+                  <tr key={item.allocation._id}>
+                    <td className="!text-left font-medium">{item.staff.name}</td>
+                    <td className="!text-left">{item.staff.department_name || item.staff.department_code || "-"}</td>
+                    <td className="!text-left"><strong>{item.allocation.paperCode}</strong><div className="text-xs text-slate-500">{item.allocation.paperName}</div></td>
+                    <td className="!text-left">{item.batch?.displayName || "-"}</td>
+                    <td>{item.allocation.semester}</td>
+                    <td>{item.academicYear?.year || "-"}</td>
+                    <td><span className={`badge ${meta.badgeClass}`}>{meta.icon} {meta.label}</span></td>
                   </tr>
                 );
               })}
-              {visible.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="py-6 text-center text-gray-400">
-                    No records match these filters.
-                  </td>
-                </tr>
-              )}
+              {visible.length === 0 && <tr><td colSpan={7} className="py-8 text-center text-gray-400">No records match these filters.</td></tr>}
             </tbody>
           </table>
         </div>
       )}
+
     </div>
   );
 }

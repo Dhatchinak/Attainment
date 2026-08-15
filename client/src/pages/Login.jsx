@@ -3,20 +3,32 @@ import { useNavigate, Link } from "react-router-dom";
 import api from "../api/axios";
 import { useAuth } from "../context/AuthContext";
 
+const STAFF_PREFIX = "BHC-STE-00";
+
 export default function Login() {
-  const [staffId, setStaffId] = useState("");
+  const [staffDigits, setStaffDigits] = useState("");
   const [dob, setDob] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const navigate = useNavigate();
   const { login } = useAuth();
 
+  function updateStaffDigits(value) {
+    setStaffDigits(String(value || "").replace(/\D/g, "").slice(0, 3));
+  }
+
   async function handleLogin(e) {
     e.preventDefault();
     setError("");
+    if (staffDigits.length !== 3) {
+      setError("Enter the last 3 digits of your Staff ID.");
+      return;
+    }
+
     setLoading(true);
     try {
-      const res = await api.post("/auth/login", { staff_id: staffId.trim(), dob });
+      const fullStaffId = `${STAFF_PREFIX}${staffDigits}`;
+      const res = await api.post("/auth/login", { staff_id: fullStaffId, dob });
       login(res.data.token, res.data.staff, false);
       navigate("/overview");
     } catch (err) {
@@ -42,15 +54,25 @@ export default function Login() {
           <form onSubmit={handleLogin} className="space-y-5">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Staff ID</label>
-              <input
-                autoFocus
-                value={staffId}
-                onChange={(e) => setStaffId(e.target.value)}
-                placeholder="e.g. BHC-STE-00466"
-                className="w-full input-field"
-                required
-              />
+              <div className="flex rounded-xl border border-slate-300 bg-white overflow-hidden focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-500/10 transition">
+                <div className="px-3.5 flex items-center bg-slate-50 border-r border-slate-200 text-sm font-semibold text-slate-600 select-none whitespace-nowrap">
+                  {STAFF_PREFIX}
+                </div>
+                <input
+                  autoFocus
+                  inputMode="numeric"
+                  pattern="[0-9]{3}"
+                  maxLength={3}
+                  value={staffDigits}
+                  onChange={(e) => updateStaffDigits(e.target.value)}
+                  placeholder="460"
+                  className="min-w-0 flex-1 px-3.5 py-3 outline-none text-base font-semibold tracking-[0.18em] text-slate-900"
+                  required
+                />
+              </div>
+              <p className="text-xs text-slate-400 mt-1.5">Enter only the last 3 digits. Example: 460 → {STAFF_PREFIX}460</p>
             </div>
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Date of Birth</label>
               <input

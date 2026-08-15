@@ -5,7 +5,6 @@ const Batch = require("../models/Batch");
 const Allocation = require("../models/Allocation");
 const Student = require("../models/Student");
 const ESEMark = require("../models/ESEMark");
-const CIAMark = require("../models/CIAMark");
 const ERPStudentCache = require("../models/ERPStudentCache");
 const { authRequired } = require("../middleware/auth");
 const { deriveSemesterFromPaperCode } = require("../utils/erpHelpers");
@@ -21,14 +20,22 @@ const {
 const router = express.Router();
 router.use(authRequired);
 
-async function ensureCurrentAcademicYear() {
-  const year = currentAcademicYear();
-  await AcademicYear.updateMany({ year: { $ne: year } }, { $set: { isActive: false } });
+async function ensureAcademicYear(year = currentAcademicYear()) {
+  // Historical academic years must remain available because staff can prepare
+  // attainment for previous batches. Never deactivate older years here.
   return AcademicYear.findOneAndUpdate(
     { year },
     { $set: { isActive: true } },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
+}
+
+function academicYearForBatchSemester(admissionYear, semester) {
+  const batchStart = Number(admissionYear);
+  const sem = Number(semester);
+  if (!Number.isFinite(batchStart) || !Number.isFinite(sem) || sem < 1) return currentAcademicYear();
+  const start = batchStart + Math.floor((sem - 1) / 2);
+  return `${start}-${start + 1}`;
 }
 
 async function syncStudentCache(force = false) {
@@ -85,7 +92,7 @@ function batchStudentFilter(rows, admissionYear) {
 
 router.get("/bootstrap", async (req, res) => {
   try {
-    const academicYear = await ensureCurrentAcademicYear();
+    const academicYear = await ensureAcademicYear();
     const cache = await syncStudentCache(req.query.refresh === "1");
     await syncDetectedAdmissionBatches();
     res.json({ academicYear, cache });
@@ -220,7 +227,10 @@ router.post("/prepare", async (req, res) => {
     const { degree, admissionBatchId, admissionYear, course, year, section = "NIL", semester, paperCode, paperName, paperType } = req.body;
     if (!degree || !admissionYear || !course || !year || !semester || !paperCode) return res.status(400).json({ message: "Complete all manual selections" });
 
-    const academicYearDoc = await ensureCurrentAcademicYear();
+    // Academic year follows the admission batch + semester, not the current
+    // calendar year. Example: 2025 batch Sem 1/2 -> 2025-2026, Sem 3/4 -> 2026-2027.
+    const academicYearLabel = academicYearForBatchSemester(admissionYear, semester);
+    const academicYearDoc = await ensureAcademicYear(academicYearLabel);
     const admissionBatch = admissionBatchId ? await AdmissionBatch.findById(admissionBatchId) : null;
     if (admissionBatchId && (!admissionBatch || !admissionBatch.isActive)) return res.status(400).json({ message: "Selected admission batch is unavailable" });
 
@@ -255,28 +265,34 @@ router.post("/prepare", async (req, res) => {
     const localStudents = await Student.find({ batch: batch._id, isActive: true });
     const byReg = new Map(localStudents.map((s) => [s.regNo, s]));
     const eseOps = [];
-    const ciaOps = [];
-    const componentMax = { T1: 30, T2: 30, AR: 20, AT: 10, SE: 20, IT: 10, MCQ: 10, LIB: 10 };
 
     for (const sourceStudent of selectedRoster) {
       const student = byReg.get(sourceStudent.rollno);
       if (!student) continue;
       const report = await fetchStudentReport(sourceStudent.rollno);
       const ese = report.ese.find((p) => p.paperCode === paperCode);
-      const cia = report.cia.find((p) => p.paperCode === paperCode);
-      if (ese) eseOps.push({ updateOne: { filter: { allocation: allocation._id, student: student._id }, update: { $set: { obtained: Number(ese.obtained) || 0, max: 100 } }, upsert: true } });
-      if (cia) {
-        const componentMarks = {};
-        Object.entries(cia.componentMarks || {}).forEach(([key, obtained]) => {
-          componentMarks[key] = { obtained: Number(obtained) || 0, max: componentMax[key] || 100 };
+      if (ese) {
+        eseOps.push({
+          updateOne: {
+            filter: { allocation: allocation._id, student: student._id },
+            update: { $set: { obtained: Number(ese.obtained) || 0, max: 100 } },
+            upsert: true,
+          },
         });
-        ciaOps.push({ updateOne: { filter: { allocation: allocation._id, student: student._id }, update: { $set: { componentMarks } }, upsert: true } });
       }
+      // CIA is intentionally NOT imported from ERP here. Question-wise T1/T2
+      // and activity marks are matched from the Admin-imported CIA workbook
+      // stored in MongoDB by paper code + academic year + ODD/EVEN term.
     }
     if (eseOps.length) await ESEMark.bulkWrite(eseOps, { ordered: false });
-    if (ciaOps.length) await CIAMark.bulkWrite(ciaOps, { ordered: false });
 
-    res.json({ academicYear: academicYearDoc, admissionBatch, batch, allocation, imported: { students: localStudents.length, ese: eseOps.length, cia: ciaOps.length } });
+    res.json({
+      academicYear: academicYearDoc,
+      admissionBatch,
+      batch,
+      allocation,
+      imported: { students: localStudents.length, ese: eseOps.length, cia: 0 },
+    });
   } catch (err) {
     console.error(err);
     res.status(502).json({ message: "Failed to prepare attainment from ERP data", error: err.message });

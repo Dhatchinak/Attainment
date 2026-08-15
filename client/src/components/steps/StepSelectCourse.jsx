@@ -1,6 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 import api from "../../api/axios";
 
+function academicYearForBatchSemester(admissionYear, semester) {
+  const batchStart = Number(admissionYear);
+  const sem = Number(semester);
+  if (!Number.isFinite(batchStart) || !Number.isFinite(sem) || sem < 1) return "";
+  const start = batchStart + Math.floor((sem - 1) / 2);
+  return `${start}-${start + 1}`;
+}
+
 export default function StepSelectCourse({ context, updateContext, onNext }) {
   const [academicYear, setAcademicYear] = useState(null);
   const [degree, setDegree] = useState(context.programme || "");
@@ -19,6 +27,7 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
   const [error, setError] = useState("");
 
   const selectedAdmissionBatch = admissionBatches.find((item) => item._id === admissionBatchId);
+  const derivedAcademicYear = academicYearForBatchSemester(selectedAdmissionBatch?.admissionYear, semester);
   const selectedClass = classes.find((item) => item.key === classKey);
   const selectedPaper = useMemo(() => papers.find((item) => item.paperCode === paperCode), [papers, paperCode]);
 
@@ -138,7 +147,7 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
       return;
     }
 
-    setLoadingLabel("Importing students, ESE and CIA marks from ERP...");
+    setLoadingLabel("Preparing class roster and ESE marks from ERP...");
     setLoading(true);
     setError("");
     try {
@@ -155,27 +164,21 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
         paperType: selectedPaper.paperType,
       });
 
-      const { batch, allocation, imported } = res.data;
+      const { academicYear: preparedAcademicYear, batch, allocation, imported } = res.data;
       let resumeStep = 1;
       let completed = false;
       try {
         const progress = await api.get(`/attainment/${allocation._id}/progress`);
         const p = progress.data;
         completed = p.completed;
-        if (!p.matrixLocked) resumeStep = 1;
-        else if (!p.settingsSet) resumeStep = 2;
-        else if (!p.studentsUploaded) resumeStep = 3;
-        else if (!p.eseEntered) resumeStep = 4;
-        else if (!p.ciaEntered) resumeStep = 5;
-        else if (!p.computed) resumeStep = 6;
-        else resumeStep = 7;
+        resumeStep = Number(p.resumeStep) || 1;
       } catch {
         resumeStep = 1;
       }
 
       updateContext({
-        academicYear: academicYear._id,
-        academicYearLabel: academicYear.year,
+        academicYear: preparedAcademicYear?._id || academicYear._id,
+        academicYearLabel: preparedAcademicYear?.year || derivedAcademicYear || academicYear.year,
         admissionBatchId: selectedAdmissionBatch._id,
         admissionBatchLabel: selectedAdmissionBatch.label,
         admissionYear: selectedAdmissionBatch.admissionYear,
@@ -201,13 +204,13 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
     <section className="workflow-panel">
       <div className="section-heading-row">
         <div>
-          <span className="section-kicker">STEP 01 · QUICK PAPER SELECTION</span>
-          <h2>Select Batch, Semester & Paper</h2>
+          <span className="section-kicker">ADD / SELECT PAPER</span>
+          <h2>Select Admission Batch, Semester & Paper</h2>
           <p>
-            Choose the batch once, then select the semester. Only papers from that semester are shown, so there are fewer clicks and no manual academic-year selection.
+            Use this when you need to add a previous admission batch or a paper that is not already listed on your dashboard. Academic year is calculated automatically from the batch and semester.
           </p>
         </div>
-        <span className="status-chip status-success">AY {academicYear?.year || "Loading..."}</span>
+        <span className="status-chip status-success">AY {derivedAcademicYear || academicYear?.year || "Loading..."}</span>
       </div>
 
       <div className="grid md:grid-cols-3 gap-5">
@@ -219,15 +222,15 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
           </select>
         </Field>
 
-        <Field label="Admission Batch">
+        <Field label="Batch Year">
           <select
             value={admissionBatchId}
             onChange={(e) => setAdmissionBatchId(e.target.value)}
             disabled={!admissionBatches.length}
             className="input-field disabled:bg-gray-100"
           >
-            <option value="">-- Select Batch --</option>
-            {admissionBatches.map((item) => <option key={item._id} value={item._id}>{item.label}</option>)}
+            <option value="">-- Select Batch Year --</option>
+            {admissionBatches.map((item) => <option key={item._id} value={item._id}>{item.admissionYear}</option>)}
           </select>
         </Field>
 
@@ -301,6 +304,21 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
         </Field>
       </div>
 
+      {selectedAdmissionBatch && semester && (
+        <div className="mt-4 rounded-xl border border-emerald-100 bg-emerald-50/70 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-sm">
+          <div>
+            <span className="text-slate-500">Academic Year for this paper</span>
+            <strong className="ml-2 text-slate-900">{derivedAcademicYear}</strong>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`course-mode-chip ${["2025-2026", "2026-2027"].includes(derivedAcademicYear) ? "is-question" : "is-legacy"}`}>
+              {["2025-2026", "2026-2027"].includes(derivedAcademicYear) ? "Question-wise CIA" : "Legacy CIA"}
+            </span>
+            <span className="text-xs text-emerald-700 font-semibold">Auto from {selectedAdmissionBatch.admissionYear} batch · Semester {semester}</span>
+          </div>
+        </div>
+      )}
+
       {selectedPaper && (
         <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
           <strong className="text-gray-900">{selectedPaper.paperCode}</strong>
@@ -322,7 +340,7 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
       )}
 
       <div className="workflow-actions">
-        <span className="text-xs text-gray-400 hidden sm:block">Academic year is handled automatically.</span>
+        <span className="text-xs text-gray-400 hidden sm:block">Current academic year is assigned automatically. Previous admission batches remain available when present in ERP.</span>
         <button onClick={handleNext} disabled={loading || !paperCode} className="btn btn-primary">
           Prepare Attainment →
         </button>

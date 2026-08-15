@@ -1,16 +1,19 @@
 const express = require("express");
 const Allocation = require("../models/Allocation");
 const Matrix = require("../models/Matrix");
-const CIAMark = require("../models/CIAMark");
 const ESEMark = require("../models/ESEMark");
 const AttainmentSettings = require("../models/AttainmentSettings");
 const Attainment = require("../models/Attainment");
+const CIAMark = require("../models/CIAMark");
 const Staff = require("../models/Staff");
 const { authRequired } = require("../middleware/auth");
-const { computeConsolidated, computePoPsoAttainment } = require("../utils/attainmentCalc");
+const { computeQuestionWiseConsolidated, computeConsolidated, computePoPsoAttainment } = require("../utils/attainmentCalc");
 const { buildMatrixKey } = require("../utils/matrixKey");
 const { computeAllocationStatus } = require("../utils/attainmentStatus");
 const { normaliseClassValue } = require("../utils/erpHelpers");
+const CIAVerification = require("../models/CIAVerification");
+const { findQuestionSet, findActivitySet } = require("../utils/ciaQuestionData");
+const { isQuestionWiseAcademicYear, allocationAcademicYear } = require("../utils/workflowMode");
 
 const router = express.Router();
 router.use(authRequired);
@@ -55,7 +58,15 @@ function serializeItem(allocation, statusInfo) {
       semester: allocation.semester,
     },
     batch: allocation.batch
-      ? { _id: allocation.batch._id, displayName: allocation.batch.displayName, programme: allocation.batch.programme }
+      ? {
+          _id: allocation.batch._id,
+          displayName: allocation.batch.displayName,
+          programme: allocation.batch.programme,
+          course: allocation.batch.course,
+          year: allocation.batch.year,
+          section: allocation.batch.section,
+          admissionYear: allocation.batch.admissionYear,
+        }
       : null,
     academicYear: allocation.academicYear
       ? { _id: allocation.academicYear._id, year: allocation.academicYear.year }
@@ -63,6 +74,7 @@ function serializeItem(allocation, statusInfo) {
     progress: statusInfo.progress,
     status: statusInfo.status,
     resumeStep: statusInfo.resumeStep,
+    workflowMode: statusInfo.workflowMode || statusInfo.progress?.workflowMode || "legacy",
   };
 }
 
@@ -142,7 +154,7 @@ router.get("/department-overview", async (req, res) => {
 });
 
 async function assertOwnership(req, allocationId) {
-  const allocation = await Allocation.findById(allocationId);
+  const allocation = await Allocation.findById(allocationId).populate("academicYear").populate("batch");
   if (!allocation) return { error: "Allocation not found", status: 404 };
   if (!req.user.isAdmin && allocation.staff_id !== req.user.staff_id) {
     return { error: "Not your allocation", status: 403 };
@@ -165,59 +177,138 @@ router.post("/:allocationId/compute", async (req, res) => {
     return res.status(400).json({ message: "Set thresholds (Marks Threshold %, Target %, Internal/External weight) before computing" });
   }
 
+  const academicYear = allocationAcademicYear(allocation);
+  const questionWise = isQuestionWiseAcademicYear(academicYear);
   const eseMarks = await ESEMark.find({ allocation: allocation._id });
-  const ciaMarks = await CIAMark.find({ allocation: allocation._id });
   if (eseMarks.length === 0) return res.status(400).json({ message: "No ESE marks entered yet" });
-  if (ciaMarks.length === 0) return res.status(400).json({ message: "No CIA marks entered yet" });
 
   const coList = matrix.rows.map((r) => r.co);
+  let calculation;
 
-  const { eseSummary, ciaComponentSummary, coAttainment, weightedAverage } = computeConsolidated({
-    eseMarks,
-    ciaMarks,
-    ciaComponents: settings.ciaComponents,
-    coList,
-    settings: {
-      thresholdMarksPercent: settings.thresholdMarksPercent,
-      targetPercent: settings.targetPercent,
-      internalWeight: settings.internalWeight,
-      externalWeight: settings.externalWeight,
-    },
-  });
+  if (questionWise) {
+    const [t1Set, t2Set, activitySet, verifications] = await Promise.all([
+      findQuestionSet(allocation, "T1"),
+      findQuestionSet(allocation, "T2"),
+      findActivitySet(allocation),
+      CIAVerification.find({ allocation: allocation._id }),
+    ]);
+
+    if (!t1Set || !t1Set.students?.length) {
+      return res.status(400).json({ message: `No T1 CIA rows match the selected class/section for ${allocation.paperCode}` });
+    }
+    if (!t2Set || !t2Set.students?.length) {
+      return res.status(400).json({ message: `No T2 CIA rows match the selected class/section for ${allocation.paperCode}` });
+    }
+    if (!activitySet || !activitySet.students?.length) {
+      return res.status(400).json({ message: `No CIA activity rows match the selected class/section for ${allocation.paperCode}` });
+    }
+
+    const verificationByStage = new Map(verifications.map((v) => [v.stage, v]));
+    const verified = (stage, source) => {
+      const v = verificationByStage.get(stage);
+      return v && source?.scope?.signature &&
+        String(v.sourceId) === String(source._id) &&
+        new Date(v.sourceUpdatedAt).getTime() === new Date(source.updatedAt).getTime() &&
+        v.sourceScopeSignature === source.scope.signature;
+    };
+    if (!verified("T1", t1Set)) return res.status(400).json({ message: "Verify T1 question-wise attainment before calculation" });
+    if (!verified("T2", t2Set)) return res.status(400).json({ message: "Verify T2 question-wise attainment before calculation" });
+    if (!verified("ACTIVITIES", activitySet)) return res.status(400).json({ message: "Verify CIA activities before calculation" });
+
+    calculation = computeQuestionWiseConsolidated({
+      eseMarks,
+      t1Set,
+      t2Set,
+      activitySet,
+      ciaComponents: settings.ciaComponents,
+      coList,
+      settings: {
+        thresholdMarksPercent: settings.thresholdMarksPercent,
+        targetPercent: settings.targetPercent,
+        internalWeight: settings.internalWeight,
+        externalWeight: settings.externalWeight,
+        eseMaxMarks: settings.eseMaxMarks,
+      },
+    });
+  } else {
+    const ciaMarks = await CIAMark.find({ allocation: allocation._id });
+    if (!ciaMarks.length) {
+      return res.status(400).json({
+        message: "CIA component marks are not available yet. Older academic years use the legacy component-total CIA method; ask Admin to update CIA marks.",
+      });
+    }
+
+    calculation = computeConsolidated({
+      eseMarks,
+      ciaMarks,
+      ciaComponents: settings.ciaComponents,
+      coList,
+      settings: {
+        thresholdMarksPercent: settings.thresholdMarksPercent,
+        targetPercent: settings.targetPercent,
+        internalWeight: settings.internalWeight,
+        externalWeight: settings.externalWeight,
+        eseMaxMarks: settings.eseMaxMarks,
+      },
+    });
+  }
 
   const { poAttainment, psoAttainment } = computePoPsoAttainment({
     matrixRows: matrix.rows,
-    weightedAverage,
+    weightedAverage: calculation.weightedAverage,
     poCount: matrix.poCount,
     psoCount: matrix.psoCount,
   });
 
-  // Settings are locked once attainment has been computed, so the numbers stay reproducible.
   if (!settings.isLocked) {
     settings.isLocked = true;
     await settings.save();
   }
 
-  // Use $set (not a bare replacement object) so recomputing never wipes out
-  // isCompleted/completedAt/completedBy if this paper was already marked done.
+  const common = {
+    allocation: allocation._id,
+    lockKey: matrix.paperKey,
+    workflowMode: questionWise ? "question_wise" : "legacy",
+    thresholdMarksPercent: settings.thresholdMarksPercent,
+    targetPercent: settings.targetPercent,
+    internalWeight: settings.internalWeight,
+    externalWeight: settings.externalWeight,
+    eseSummary: calculation.eseSummary,
+    coAttainment: calculation.coAttainment,
+    weightedAverage: calculation.weightedAverage,
+    poAttainment,
+    psoAttainment,
+    computedAt: new Date(),
+    isCompleted: false,
+  };
+
+  if (questionWise) {
+    Object.assign(common, {
+      ciaComponentSummary: calculation.activitySummary,
+      t1QuestionSummary: calculation.t1Summary,
+      t2QuestionSummary: calculation.t2Summary,
+      ciaActivitySummary: calculation.activitySummary,
+      formulaWeights: calculation.formulaWeights,
+    });
+  } else {
+    Object.assign(common, {
+      ciaComponentSummary: calculation.ciaComponentSummary,
+      t1QuestionSummary: null,
+      t2QuestionSummary: null,
+      ciaActivitySummary: [],
+      formulaWeights: {
+        mode: "legacy",
+        internalWeight: settings.internalWeight,
+        externalWeight: settings.externalWeight,
+      },
+    });
+  }
+
   const saved = await Attainment.findOneAndUpdate(
     { allocation: allocation._id },
     {
-      $set: {
-        allocation: allocation._id,
-        lockKey: matrix.paperKey,
-        thresholdMarksPercent: settings.thresholdMarksPercent,
-        targetPercent: settings.targetPercent,
-        internalWeight: settings.internalWeight,
-        externalWeight: settings.externalWeight,
-        eseSummary,
-        ciaComponentSummary,
-        coAttainment,
-        weightedAverage,
-        poAttainment,
-        psoAttainment,
-        computedAt: new Date(),
-      },
+      $set: common,
+      $unset: { completedAt: 1, completedBy: 1 },
     },
     { upsert: true, new: true }
   );
@@ -244,8 +335,48 @@ router.get("/:allocationId/progress", async (req, res) => {
   const { allocation, error, status } = await assertOwnership(req, req.params.allocationId);
   if (error) return res.status(status).json({ message: error });
 
-  const { progress } = await computeAllocationStatus(allocation);
-  res.json(progress);
+  const { progress, resumeStep, workflowMode } = await computeAllocationStatus(allocation);
+  res.json({ ...progress, resumeStep, workflowMode });
+});
+
+// Save course-teacher remarks that appear on the final printable report.
+router.patch("/:allocationId/remarks", async (req, res) => {
+  const { allocation, error, status } = await assertOwnership(req, req.params.allocationId);
+  if (error) return res.status(status).json({ message: error });
+
+  const remarks = String(req.body?.remarks ?? "").trim();
+  if (remarks.length > 2000) {
+    return res.status(400).json({ message: "Remarks cannot exceed 2000 characters" });
+  }
+
+  const outcomeRemarks = {};
+  for (const [key, value] of Object.entries(req.body?.outcomeRemarks || {})) {
+    const outcome = String(key || "").trim().toUpperCase();
+    if (!/^(PO|PSO)\d+$/.test(outcome)) continue;
+    const text = String(value ?? "").trim();
+    if (text.length > 500) {
+      return res.status(400).json({ message: `${outcome} remark cannot exceed 500 characters` });
+    }
+    outcomeRemarks[outcome] = text;
+  }
+
+  const attainment = await Attainment.findOneAndUpdate(
+    { allocation: allocation._id },
+    {
+      $set: {
+        remarks,
+        outcomeRemarks,
+        remarksUpdatedAt: new Date(),
+        remarksUpdatedBy: req.user.staff_id || (req.user.isAdmin ? "ADMIN" : ""),
+      },
+    },
+    { new: true }
+  );
+
+  if (!attainment) {
+    return res.status(400).json({ message: "Compute attainment before saving remarks" });
+  }
+  res.json(attainment);
 });
 
 // Mark this paper's attainment workflow as fully done. Doesn't lock anything

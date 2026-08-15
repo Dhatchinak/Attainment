@@ -88,6 +88,9 @@ router.get("/:allocationId", async (req, res) => {
 router.post("/:allocationId/bulk", async (req, res) => {
   const { allocation, error, status } = await assertOwnership(req, req.params.allocationId);
   if (error) return res.status(status).json({ message: error });
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ message: "ESE marks are ERP-synced and read-only for staff" });
+  }
 
   const settings = await AttainmentSettings.findOne({ allocation: allocation._id });
   if (!settings) return res.status(400).json({ message: "Save threshold settings before entering ESE marks" });
@@ -132,6 +135,9 @@ router.post("/:allocationId/bulk", async (req, res) => {
 router.post("/:allocationId/upload", upload.single("file"), async (req, res) => {
   const { allocation, error, status } = await assertOwnership(req, req.params.allocationId);
   if (error) return res.status(status).json({ message: error });
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ message: "ESE marks are ERP-synced and read-only for staff" });
+  }
   if (!req.file) return res.status(400).json({ message: "Excel file required" });
 
   const settings = await AttainmentSettings.findOne({ allocation: allocation._id });

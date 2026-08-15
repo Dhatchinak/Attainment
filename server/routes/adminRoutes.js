@@ -393,7 +393,15 @@ router.get("/attainment-records", async (req, res) => {
           semester: allocation.semester,
         },
         batch: allocation.batch
-          ? { _id: allocation.batch._id, displayName: allocation.batch.displayName, programme: allocation.batch.programme }
+          ? {
+              _id: allocation.batch._id,
+              displayName: allocation.batch.displayName,
+              programme: allocation.batch.programme,
+              course: allocation.batch.course,
+              year: allocation.batch.year,
+              section: allocation.batch.section,
+              admissionYear: allocation.batch.admissionYear,
+            }
           : null,
         academicYear: allocation.academicYear
           ? { _id: allocation.academicYear._id, year: allocation.academicYear.year }

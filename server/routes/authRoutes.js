@@ -15,6 +15,15 @@ function isHodDesignation(designation) {
   if (!designation) return false;
   return /\bhod\b|head\s*of\s*(the\s*)?department/i.test(designation);
 }
+
+function normalizeStaffIdInput(value) {
+  const raw = String(value || "").trim().toUpperCase();
+  if (/^\d{1,3}$/.test(raw)) return `BHC-STE-00${raw.padStart(3, "0")}`;
+  const full = raw.match(/^BHC-STE-(\d{1,5})$/);
+  if (full) return `BHC-STE-${full[1].padStart(5, "0")}`;
+  return raw;
+}
+
 function extractErpDob(erpData) {
   const candidates = ["dob", "DOB", "date_of_birth", "dateOfBirth", "DateOfBirth", "birth_date", "birthDate"];
   for (const key of candidates) {
@@ -61,13 +70,14 @@ router.post("/login", async (req, res) => {
     if (!staff_id || !dob) {
       return res.status(400).json({ message: "Staff ID and Date of Birth are required" });
     }
+    const normalizedStaffId = normalizeStaffIdInput(staff_id);
 
     const enteredDob = normalizeDob(dob);
     if (!enteredDob) {
       return res.status(400).json({ message: "Invalid Date of Birth format" });
     }
 
-    const erpData = await fetchStaffFromERP(staff_id.trim());
+    const erpData = await fetchStaffFromERP(normalizedStaffId);
     if (!erpData) {
       return res.status(404).json({ message: "Staff ID not found in ERP" });
     }

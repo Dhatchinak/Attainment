@@ -4,6 +4,8 @@ const AcademicYear = require("../models/AcademicYear");
 const Batch = require("../models/Batch");
 const Allocation = require("../models/Allocation");
 const Staff = require("../models/Staff");
+const CIAQuestionSet = require("../models/CIAQuestionSet");
+const CIAActivitySet = require("../models/CIAActivitySet");
 const { authRequired } = require("../middleware/auth");
 const { fetchStaffFromERP } = require("../utils/externalApi");
 const {
@@ -17,6 +19,22 @@ const router = express.Router();
 router.use(authRequired);
 
 router.get("/academic-years", async (req, res) => {
+  // Existing CIA imports may contain historical years that were imported before
+  // the AcademicYear collection was updated. Surface those years automatically.
+  const [questionYears, activityYears] = await Promise.all([
+    CIAQuestionSet.distinct("academicYear", { academicYear: { $ne: "" } }),
+    CIAActivitySet.distinct("academicYear", { academicYear: { $ne: "" } }),
+  ]);
+  const importedYears = [...new Set([...questionYears, ...activityYears])].filter((year) => /^20\d{2}-20\d{2}$/.test(String(year)));
+  if (importedYears.length) {
+    await AcademicYear.bulkWrite(
+      importedYears.map((year) => ({
+        updateOne: { filter: { year }, update: { $set: { isActive: true } }, upsert: true },
+      })),
+      { ordered: false }
+    );
+  }
+
   const years = await AcademicYear.find({ isActive: true }).sort({ year: -1 });
   res.json(years);
 });

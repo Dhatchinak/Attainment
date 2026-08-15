@@ -54,42 +54,54 @@ router.get("/:allocationId", async (req, res) => {
   res.json({ paperCode: allocation.paperCode, components: settings.ciaComponents, grid, componentSummary });
 });
 
-// Manual bulk save from the on-screen grid
+// Manual bulk save from the admin CIA editor. Staff can view CIA but cannot modify it.
 // body: { entries: [{ studentId, componentMarks: {T1:{obtained,max}, ...} }] }
 router.post("/:allocationId/bulk", async (req, res) => {
   const { allocation, error, status } = await assertOwnership(req, req.params.allocationId);
   if (error) return res.status(status).json({ message: error });
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ message: "CIA marks can be updated only by Admin" });
+  }
 
   const { entries } = req.body;
   if (!Array.isArray(entries)) return res.status(400).json({ message: "entries array required" });
 
-  // Safety net: never persist a mark with an obtained value but a missing/zero max —
-  // that silently zeroes out attainment later. Backfill from the configured component's
-  // maxMarks regardless of what the client sent.
   const settings = await AttainmentSettings.findOne({ allocation: allocation._id });
+  if (!settings) return res.status(400).json({ message: "Set CIA components and thresholds before entering CIA marks" });
+
   const maxByKey = {};
-  (settings?.ciaComponents || []).forEach((c) => (maxByKey[c.key] = c.maxMarks));
+  (settings.ciaComponents || []).forEach((c) => (maxByKey[c.key] = Number(c.maxMarks) || 0));
 
-  const ops = entries.map((e) => {
+  const ops = [];
+  for (const entry of entries) {
     const fixed = {};
-    Object.entries(e.componentMarks || {}).forEach(([key, mark]) => {
-      if (mark == null || mark.obtained === undefined || mark.obtained === null || mark.obtained === "") return;
-      fixed[key] = {
-        obtained: Number(mark.obtained) || 0,
-        max: Number(mark.max) || maxByKey[key] || 0,
-      };
-    });
-    return {
-      updateOne: {
-        filter: { allocation: allocation._id, student: e.studentId },
-        update: { $set: { componentMarks: fixed } },
-        upsert: true,
-      },
-    };
-  });
+    for (const [key, mark] of Object.entries(entry.componentMarks || {})) {
+      if (mark == null || mark.obtained === undefined || mark.obtained === null || mark.obtained === "") continue;
+      const max = Number(mark.max) || maxByKey[key] || 0;
+      const obtained = Number(mark.obtained);
+      if (!Number.isFinite(obtained) || obtained < 0 || max <= 0 || obtained > max) {
+        return res.status(400).json({ message: `${key} mark must be between 0 and ${max || "its configured maximum"}` });
+      }
+      fixed[key] = { obtained, max };
+    }
 
-  if (ops.length) await CIAMark.bulkWrite(ops);
-  res.json({ message: "CIA marks saved", count: ops.length });
+    if (Object.keys(fixed).length > 0) {
+      ops.push({
+        updateOne: {
+          filter: { allocation: allocation._id, student: entry.studentId },
+          update: { $set: { componentMarks: fixed } },
+          upsert: true,
+        },
+      });
+    } else {
+      // Empty rows stay truly empty, so ciaEntered is not falsely marked complete.
+      ops.push({ deleteOne: { filter: { allocation: allocation._id, student: entry.studentId } } });
+    }
+  }
+
+  if (ops.length) await CIAMark.bulkWrite(ops, { ordered: false });
+  const count = await CIAMark.countDocuments({ allocation: allocation._id });
+  res.json({ message: "CIA marks saved", rowsWithMarks: count });
 });
 
 // Bulk upload via Excel. Expected columns: Roll No (or regNo), Name, then one column
@@ -97,6 +109,9 @@ router.post("/:allocationId/bulk", async (req, res) => {
 router.post("/:allocationId/upload", upload.single("file"), async (req, res) => {
   const { allocation, error, status } = await assertOwnership(req, req.params.allocationId);
   if (error) return res.status(status).json({ message: error });
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ message: "CIA marks can be updated only by Admin" });
+  }
   if (!req.file) return res.status(400).json({ message: "Excel file required" });
 
   const settings = await AttainmentSettings.findOne({ allocation: allocation._id });
@@ -117,19 +132,27 @@ router.post("/:allocationId/upload", upload.single("file"), async (req, res) => 
     if (!student) { skipped++; continue; }
 
     const componentMarks = {};
-    settings.ciaComponents.forEach((comp) => {
-      const obtained = Number(row[comp.key] ?? 0) || 0;
+    for (const comp of settings.ciaComponents) {
+      const raw = row[comp.key];
+      if (raw === undefined || raw === null || raw === "") continue;
+      const obtained = Number(raw);
       const maxCol = row[`${comp.key}_max`];
       const max = maxCol !== undefined && maxCol !== "" ? Number(maxCol) || comp.maxMarks : comp.maxMarks;
+      if (!Number.isFinite(obtained) || obtained < 0 || obtained > max) {
+        skipped++;
+        continue;
+      }
       componentMarks[comp.key] = { obtained, max };
-    });
+    }
 
-    await CIAMark.findOneAndUpdate(
-      { allocation: allocation._id, student: student._id },
-      { $set: { componentMarks } },
-      { upsert: true }
-    );
-    updated++;
+    if (Object.keys(componentMarks).length > 0) {
+      await CIAMark.findOneAndUpdate(
+        { allocation: allocation._id, student: student._id },
+        { $set: { componentMarks } },
+        { upsert: true }
+      );
+      updated++;
+    }
   }
 
   res.json({ message: "CIA bulk upload complete", updated, skipped, total: rows.length });
