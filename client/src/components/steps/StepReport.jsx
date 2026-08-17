@@ -139,6 +139,12 @@ export default function StepReport({ context, onBack, questionWise = true }) {
   const innovativeWeight = Number(result.formulaWeights?.innovativeWeight ?? 2.5);
   const ciaWeight = Number(result.formulaWeights?.internalWeight ?? result.internalWeight ?? 25);
   const eseWeight = Number(result.formulaWeights?.externalWeight ?? result.externalWeight ?? 75);
+  const reportContext = result.reportContext || {};
+  const reportClass = reportContext.classLabel || context.batchLabel || "Class not available";
+  const reportBatch = reportContext.admissionYear || context.admissionYear || "—";
+  const reportAcademicYear = reportContext.academicYear || context.academicYearLabel || "—";
+  const reportSemester = reportContext.semester || context.allocation?.semester || "—";
+  const reportProgramme = reportContext.programme || context.programme || "—";
 
   return (
     <section className="workflow-panel report-workspace" id="report-print-area">
@@ -160,7 +166,7 @@ export default function StepReport({ context, onBack, questionWise = true }) {
         <div>
           <span className="section-kicker">FINAL ATTAINMENT REPORT</span>
           <h2>{context.allocation?.paperCode} · {context.allocation?.paperName}</h2>
-          <p>{actualQuestionWise ? "Question-wise CIA workflow" : "Legacy component-total CIA workflow"} · Academic Year {context.academicYearLabel || "—"}</p>
+          <p>{actualQuestionWise ? "Question-wise CIA workflow" : "Legacy component-total CIA workflow"} · Academic Year {reportAcademicYear}</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end print:hidden">
           <span className={`status-chip ${result.isCompleted ? "status-success" : "status-warning"}`}>
@@ -169,12 +175,25 @@ export default function StepReport({ context, onBack, questionWise = true }) {
         </div>
       </div>
 
+      <div className="report-class-scope">
+        <div>
+          <span>ATTAINMENT CLASS / SECTION</span>
+          <strong>{reportClass}</strong>
+          <small>This attainment report applies only to the class/section shown here.</small>
+        </div>
+        <span className={`report-class-status ${result.isCompleted ? "is-complete" : "is-pending"}`}>
+          {result.isCompleted ? "✓ CLASS-PAPER ATTAINMENT COMPLETED" : "CLASS-PAPER ATTAINMENT PENDING"}
+        </span>
+      </div>
+
       <div className="report-info-grid">
-        <div><span>Course Code</span><strong>{context.allocation?.paperCode || "—"}</strong></div>
-        <div><span>Course Title</span><strong>{context.allocation?.paperName || "—"}</strong></div>
-        <div><span>Semester</span><strong>{context.allocation?.semester || "—"}</strong></div>
-        <div><span>Batch</span><strong>{context.admissionYear || context.batchLabel || "—"}</strong></div>
-        <div><span>Academic Year</span><strong>{context.academicYearLabel || "—"}</strong></div>
+        <div><span>Course Code</span><strong>{context.allocation?.paperCode || reportContext.paperCode || "—"}</strong></div>
+        <div><span>Course Title</span><strong>{context.allocation?.paperName || reportContext.paperName || "—"}</strong></div>
+        <div><span>Class / Section</span><strong>{reportClass}</strong></div>
+        <div><span>Programme</span><strong>{reportProgramme}</strong></div>
+        <div><span>Semester</span><strong>{reportSemester}</strong></div>
+        <div><span>Batch</span><strong>{reportBatch}</strong></div>
+        <div><span>Academic Year</span><strong>{reportAcademicYear}</strong></div>
         <div><span>Course Teacher</span><strong>{staff?.salute} {staff?.name}</strong></div>
       </div>
 

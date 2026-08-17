@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import * as XLSX from "xlsx";
 import { useAuth } from "../context/AuthContext";
 import api from "../api/axios";
 import { isQuestionWiseAcademicYear } from "../utils/workflowMode";
+import { downloadHodChecklistPdf } from "../utils/checklistPdf";
 
 const STATUS_META = {
   completed: { label: "Completed", badgeClass: "status-success", buttonLabel: "View Report", icon: "✓" },
@@ -55,7 +55,7 @@ function classLabel(batch) {
   if (!batch) return "Class not available";
   const course = cleanCourseName(batch.course || "");
   const year = batch.year ? `Year ${batch.year}` : "";
-  const section = batch.section && batch.section !== "NIL" ? `Section ${batch.section}` : "";
+  const section = batch.section === "NIL" ? "Aided (NIL)" : batch.section ? `Section ${batch.section}` : "";
   const built = [year, course, section].filter(Boolean).join(" · ");
   return built || batch.displayName || "Class";
 }
@@ -209,73 +209,57 @@ export default function Overview() {
   function downloadChecklist() {
     if (!items.length) return;
     const yearLabel = selectedYear?.year || "Academic Year";
-    const generated = new Date();
     const staffName = [staff?.salute, staff?.name].filter(Boolean).join(" ");
 
-    const summaryRows = [
-      ["BISHOP HEBER COLLEGE (AUTONOMOUS)"],
-      ["CO-PO-PSO ATTAINMENT - STAFF COMPLETION CHECKLIST"],
-      [],
-      ["Academic Year", yearLabel],
-      ["Staff", staffName],
-      ["Department", staff?.department_name || ""],
-      ["Generated On", generated.toLocaleString()],
-      [],
-      ["Total Papers", summary.total],
-      ["Semesters", summary.semesters],
-      ["Completed", summary.completed],
-      ["In Progress", summary.inProgress],
-      ["Not Started", summary.notStarted],
-      ["Completion %", `${summary.completion}%`],
-      [],
-      ["Submission Note", "This checklist shows the live completion status of papers handled by the staff member for HOD verification."],
-    ];
-
-    const checklistHeader = [
-      "S.No", "Semester", "Batch", "Academic Year", "Class", "Paper Code", "Paper Title", "CIA Method", "Overall Status",
-      "CO-PO-PSO Matrix", "Thresholds", "ESE Marks", "T1 Question-wise", "T2 Question-wise", "CIA Activities", "Legacy CIA Marks", "CO Calculation",
-      "Final Completed", "HOD Verification / Remarks",
-    ];
-    const checklistRows = items
+    const sortedItems = items
       .slice()
-      .sort((a, b) => Number(a.allocation?.semester || 0) - Number(b.allocation?.semester || 0) || String(a.allocation?.paperCode).localeCompare(String(b.allocation?.paperCode)))
-      .map((item, index) => {
-        const qwise = isQuestionWiseItem(item);
-        return [
-          index + 1,
-          item.allocation?.semester || "",
-          batchYear(item.batch),
-          item.academicYear?.year || yearLabel,
-          classLabel(item.batch),
-          item.allocation?.paperCode || "",
-          item.allocation?.paperName || "",
-          qwise ? "Question-wise CIA" : "Legacy CIA",
-          (STATUS_META[item.status] || STATUS_META.not_started).label,
-          yesNo(item.progress?.matrixLocked),
-          yesNo(item.progress?.settingsSet),
-          yesNo(item.progress?.eseEntered),
-          qwise ? yesNo(item.progress?.t1Verified) : "N/A",
-          qwise ? yesNo(item.progress?.t2Verified) : "N/A",
-          qwise ? yesNo(item.progress?.activitiesVerified) : "N/A",
-          qwise ? "N/A" : yesNo(item.progress?.ciaEntered),
-          yesNo(item.progress?.computed),
-          yesNo(item.progress?.completed),
-          "",
-        ];
+      .sort((a, b) => {
+        const classCompare = classLabel(a.batch).localeCompare(classLabel(b.batch));
+        if (classCompare) return classCompare;
+        return Number(a.allocation?.semester || 0) - Number(b.allocation?.semester || 0)
+          || String(a.allocation?.paperCode || "").localeCompare(String(b.allocation?.paperCode || ""));
       });
 
-    const wb = XLSX.utils.book_new();
-    const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
-    wsSummary["!cols"] = [{ wch: 25 }, { wch: 72 }];
-    const wsChecklist = XLSX.utils.aoa_to_sheet([checklistHeader, ...checklistRows]);
-    wsChecklist["!cols"] = [
-      { wch: 7 }, { wch: 10 }, { wch: 10 }, { wch: 15 }, { wch: 28 }, { wch: 16 }, { wch: 38 }, { wch: 18 }, { wch: 16 },
-      { wch: 18 }, { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 18 }, { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 16 }, { wch: 30 },
-    ];
-    wsChecklist["!autofilter"] = { ref: `A1:${XLSX.utils.encode_col(checklistHeader.length - 1)}${checklistRows.length + 1}` };
-    XLSX.utils.book_append_sheet(wb, wsSummary, "Submission Summary");
-    XLSX.utils.book_append_sheet(wb, wsChecklist, "Class Checklist");
-    XLSX.writeFile(wb, `Attainment_Checklist_${yearLabel.replace(/[^0-9A-Za-z-]/g, "_")}.xlsx`);
+    const classMap = new Map();
+    sortedItems.forEach((item) => {
+      const className = classLabel(item.batch);
+      const key = `${className}::${batchYear(item.batch)}`;
+      const current = classMap.get(key) || { className, total: 0, completed: 0, pending: 0 };
+      current.total += 1;
+      if (item.status === "completed") current.completed += 1;
+      else current.pending += 1;
+      classMap.set(key, current);
+    });
+
+    const classes = [...classMap.values()].map((row) => ({
+      ...row,
+      status: row.pending === 0 ? "COMPLETED" : `PENDING (${row.pending})`,
+    }));
+
+    const papers = sortedItems.map((item) => ({
+      className: classLabel(item.batch),
+      semester: item.allocation?.semester || "-",
+      batch: batchYear(item.batch),
+      paperCode: item.allocation?.paperCode || "",
+      paperName: item.allocation?.paperName || "",
+      method: isQuestionWiseItem(item) ? "Question-wise" : "Legacy",
+      status: item.status === "completed" ? "COMPLETED" : "PENDING",
+      stage: item.status === "completed" ? "Final Report completed" : currentStage(item),
+    }));
+
+    downloadHodChecklistPdf({
+      academicYear: yearLabel,
+      staffName,
+      department: staff?.department_name || "",
+      summary: {
+        total: summary.total,
+        completed: summary.completed,
+        pending: summary.pending,
+        completion: summary.completion,
+      },
+      classes,
+      papers,
+    });
   }
 
   return (
@@ -305,7 +289,7 @@ export default function Overview() {
           <div>
             <span className="dashboard-eyebrow">ACADEMIC ATTAINMENT WORKSPACE</span>
             <h2>Welcome, {staff?.salute} {staff?.name}</h2>
-            <p>Track every assigned paper, continue pending work, and download the completion checklist required for HOD submission.</p>
+            <p>Track every assigned paper, continue pending work, and download the class-wise PDF completion checklist required for HOD submission.</p>
           </div>
           <div className="dashboard-year-card">
             <span>Working Academic Year</span>
@@ -328,7 +312,7 @@ export default function Overview() {
               {syncing ? "Syncing ERP..." : "↻ Sync Current Classes"}
             </button>
             <button onClick={addPreviousBatch} className="btn btn-ghost">＋ Add Previous Batch / Paper</button>
-            <button onClick={downloadChecklist} disabled={!items.length} className="btn btn-ghost">↓ Download HOD Checklist (.xlsx)</button>
+            <button onClick={downloadChecklist} disabled={!items.length} className="btn btn-ghost">↓ Download HOD Checklist (PDF)</button>
           </div>
           <div className="dashboard-filters">
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search paper or class..." className="input-field" />

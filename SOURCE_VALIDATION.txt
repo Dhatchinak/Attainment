@@ -1,13 +1,14 @@
-Question-wise CIA update validation
-===================================
+Attainment Question-wise CIA v8 source validation
+=================================================
 
-- Backend changed JavaScript files: node --check passed.
-- Client: all JS/JSX source files parsed successfully with @babel/parser and all relative imports resolved.
-- Supplied English workbook smoke check passed:
-  * 54 ODD T1/T2 mapping rows
-  * 54 EVEN T1/T2 mapping rows
-  * 15,633 ODD question-mark rows
-  * 13,879 EVEN question-mark rows
-- Formula pipeline was smoke-tested with a real paper from the supplied English workbook.
+Validated on 2026-08-15:
+- All server JavaScript files pass `node --check`.
+- All 30 frontend JS/JSX source files parse successfully using TypeScript JSX transpilation.
+- All relative frontend imports resolve to existing files.
+- Department-wise CIA import UI supports multiple workbook selection and sequential import.
+- Existing v7 CIA datasets are backfilled into department verification records.
+- CIA question/activity MongoDB unique indexes are department-aware.
+- Supplied English CIA workbook was inspected for department/source structure.
+- Zero-observed question maximum fallback leaves only completely missing source datasets unresolved rather than guessing them.
 
-Full Vite production build was not run in this Linux workspace because the uploaded project contained Windows node_modules and therefore lacked Rollup's Linux optional native package. The clean ZIP excludes node_modules; run npm install on the target Windows system before npm run dev/build.
+A full Vite bundle was not produced in this Linux validation environment because the available project node_modules were installed on Windows and do not include Rollup's Linux native optional package. Source syntax/import validation passed.

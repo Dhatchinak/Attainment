@@ -8,6 +8,7 @@ const CIAQuestionSchema = new mongoose.Schema(
     maxMarks: { type: Number, default: 0 },
     maxMarksInferred: { type: Boolean, default: true },
     observedMax: { type: Number, default: 0 },
+    maxMarksInferenceSource: { type: String, default: "" },
     order: { type: Number, default: 0 },
   },
   { _id: false }
@@ -38,6 +39,12 @@ const CIAQuestionStudentSchema = new mongoose.Schema(
  */
 const CIAQuestionSetSchema = new mongoose.Schema(
   {
+    departmentName: { type: String, default: "" },
+    departmentKey: { type: String, default: "", index: true },
+    departmentImportVersion: { type: Number, default: 1 },
+    departmentVerified: { type: Boolean, default: false },
+    departmentVerifiedBy: { type: String, default: "" },
+    departmentVerifiedAt: { type: Date, default: null },
     paperCode: { type: String, required: true },
     paperCodeKey: { type: String, required: true, index: true },
     exam: { type: String, enum: ["T1", "T2"], required: true, index: true },
@@ -55,8 +62,8 @@ const CIAQuestionSetSchema = new mongoose.Schema(
 );
 
 CIAQuestionSetSchema.index(
-  { paperCodeKey: 1, exam: 1, term: 1, academicYear: 1 },
-  { unique: true }
+  { departmentKey: 1, paperCodeKey: 1, exam: 1, term: 1, academicYear: 1 },
+  { unique: true, name: "cia_department_question_unique" }
 );
 
 module.exports = mongoose.model("CIAQuestionSet", CIAQuestionSetSchema);

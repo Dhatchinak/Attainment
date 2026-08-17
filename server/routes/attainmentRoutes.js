@@ -323,7 +323,35 @@ router.get("/:allocationId", async (req, res) => {
 
   const attainment = await Attainment.findOne({ allocation: allocation._id });
   if (!attainment) return res.status(404).json({ message: "Not computed yet" });
-  res.json(attainment);
+
+  const batch = allocation.batch || null;
+  const section = String(batch?.section || "").trim();
+  const sectionLabel = section.toUpperCase() === "NIL"
+    ? "Aided (NIL)"
+    : section ? `Section ${section}` : "Section not available";
+  const classParts = [
+    batch?.year ? `Year ${batch.year}` : "",
+    batch?.course || "",
+    sectionLabel,
+  ].filter(Boolean);
+
+  res.json({
+    ...attainment.toObject(),
+    reportContext: {
+      classLabel: classParts.join(" · ") || batch?.displayName || "Class not available",
+      programme: batch?.programme || "",
+      course: batch?.course || "",
+      studyYear: batch?.year || "",
+      section,
+      sectionLabel,
+      admissionYear: batch?.admissionYear || null,
+      academicYear: allocation.academicYear?.year || "",
+      semester: allocation.semester,
+      paperCode: allocation.paperCode,
+      paperName: allocation.paperName,
+      paperType: allocation.paperType || "",
+    },
+  });
 });
 
 /**

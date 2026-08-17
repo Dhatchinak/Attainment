@@ -187,7 +187,11 @@ export default function StepSelectCourse({ context, updateContext, onNext }) {
         studyYear: selectedClass.studyYear,
         semester: Number(semester),
         batch: batch._id,
-        batchLabel: batch.displayName,
+        batchLabel: [
+          `Year ${selectedClass.studyYear}`,
+          course,
+          selectedClass.section === "NIL" ? "Aided (NIL)" : `Section ${selectedClass.section}`,
+        ].filter(Boolean).join(" · "),
         allocation,
         completed,
         imported,

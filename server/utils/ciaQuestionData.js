@@ -2,6 +2,7 @@ const CIAQuestionSet = require("../models/CIAQuestionSet");
 const CIAActivitySet = require("../models/CIAActivitySet");
 const Student = require("../models/Student");
 const Batch = require("../models/Batch");
+const Staff = require("../models/Staff");
 const crypto = require("crypto");
 
 function clean(value) {
@@ -39,6 +40,22 @@ function normaliseCourse(value) {
     .toUpperCase()
     .replace(/^(UG|PG)[-\s]+/, "")
     .replace(/[^A-Z0-9]+/g, "");
+}
+
+
+function normaliseDepartmentKey(value) {
+  return clean(value)
+    .replace(/^department\s+of\s+/i, "")
+    .replace(/\b(?:dept|department)\.?$/i, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "");
+}
+
+async function allocationDepartmentKey(allocation) {
+  const staffId = clean(allocation?.staff_id);
+  if (!staffId) return "";
+  const staff = await Staff.findOne({ staff_id: staffId }).select("department_name department_code").lean();
+  return normaliseDepartmentKey(staff?.department_name || staff?.department_code || "");
 }
 
 function buildScopeSignature(students, batch, section, course) {
@@ -156,13 +173,18 @@ async function findQuestionSet(allocation, exam) {
   const term = termFromSemester(allocation.semester);
   const academicYear = academicYearValue(allocation);
 
-  let source = await CIAQuestionSet.findOne({ paperCodeKey: key, exam, term, academicYear }).lean();
+  const departmentKey = await allocationDepartmentKey(allocation);
+  let source = null;
+  if (departmentKey) {
+    source = await CIAQuestionSet.findOne({ departmentKey, paperCodeKey: key, exam, term, academicYear }).lean();
+  }
+  if (!source) source = await CIAQuestionSet.findOne({ paperCodeKey: key, exam, term, academicYear }).sort({ importedAt: -1 }).lean();
   if (!source) {
     // Fallback only for legacy imports where the academic year was genuinely
     // unavailable. Never silently borrow another academic year's CIA marks.
-    source = await CIAQuestionSet.findOne({ paperCodeKey: key, exam, term, academicYear: "" })
-      .sort({ importedAt: -1 })
-      .lean();
+    const legacyQuery = { paperCodeKey: key, exam, term, academicYear: "" };
+    if (departmentKey) legacyQuery.departmentKey = { $in: [departmentKey, ""] };
+    source = await CIAQuestionSet.findOne(legacyQuery).sort({ importedAt: -1 }).lean();
   }
   return scopeStudentsToAllocation(source, allocation, { hasSection: true });
 }
@@ -172,11 +194,16 @@ async function findActivitySet(allocation) {
   const term = termFromSemester(allocation.semester);
   const academicYear = academicYearValue(allocation);
 
-  let source = await CIAActivitySet.findOne({ paperCodeKey: key, term, academicYear }).lean();
+  const departmentKey = await allocationDepartmentKey(allocation);
+  let source = null;
+  if (departmentKey) {
+    source = await CIAActivitySet.findOne({ departmentKey, paperCodeKey: key, term, academicYear }).lean();
+  }
+  if (!source) source = await CIAActivitySet.findOne({ paperCodeKey: key, term, academicYear }).sort({ importedAt: -1 }).lean();
   if (!source) {
-    source = await CIAActivitySet.findOne({ paperCodeKey: key, term, academicYear: "" })
-      .sort({ importedAt: -1 })
-      .lean();
+    const legacyQuery = { paperCodeKey: key, term, academicYear: "" };
+    if (departmentKey) legacyQuery.departmentKey = { $in: [departmentKey, ""] };
+    source = await CIAActivitySet.findOne(legacyQuery).sort({ importedAt: -1 }).lean();
   }
   // MAJOR/PARTII activity sheets do not consistently carry section, so use
   // the selected Batch roster whenever available and course as fallback.
@@ -189,6 +216,7 @@ module.exports = {
   termFromSemester,
   academicYearValue,
   normaliseSection,
+  normaliseDepartmentKey,
   findQuestionSet,
   findActivitySet,
 };

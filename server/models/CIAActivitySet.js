@@ -26,6 +26,12 @@ const CIAActivityStudentSchema = new mongoose.Schema(
 /** Imported non-test CIA components from MAJOR_ODD / MAJOR_EVEN. */
 const CIAActivitySetSchema = new mongoose.Schema(
   {
+    departmentName: { type: String, default: "" },
+    departmentKey: { type: String, default: "", index: true },
+    departmentImportVersion: { type: Number, default: 1 },
+    departmentVerified: { type: Boolean, default: false },
+    departmentVerifiedBy: { type: String, default: "" },
+    departmentVerifiedAt: { type: Date, default: null },
     paperCode: { type: String, required: true },
     paperCodeKey: { type: String, required: true, index: true },
     term: { type: String, enum: ["ODD", "EVEN"], required: true, index: true },
@@ -41,8 +47,8 @@ const CIAActivitySetSchema = new mongoose.Schema(
 );
 
 CIAActivitySetSchema.index(
-  { paperCodeKey: 1, term: 1, academicYear: 1 },
-  { unique: true }
+  { departmentKey: 1, paperCodeKey: 1, term: 1, academicYear: 1 },
+  { unique: true, name: "cia_department_activity_unique" }
 );
 
 module.exports = mongoose.model("CIAActivitySet", CIAActivitySetSchema);
