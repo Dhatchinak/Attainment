@@ -1,17 +1,206 @@
 const express = require("express");
+const multer = require("multer");
+const bcrypt = require("bcryptjs");
 const AcademicYear = require("../models/AcademicYear");
 const Batch = require("../models/Batch");
 const AdmissionBatch = require("../models/AdmissionBatch");
 const Allocation = require("../models/Allocation");
 const Attainment = require("../models/Attainment");
 const Staff = require("../models/Staff");
+const ApiSyncJob = require("../models/ApiSyncJob");
+const ERPStudentReport = require("../models/ERPStudentReport");
+const HistoricalAttainmentRecord = require("../models/HistoricalAttainmentRecord");
+const DepartmentAccount = require("../models/DepartmentAccount");
 const { authRequired, adminRequired } = require("../middleware/auth");
 const { fetchStaffFromERP, fetchDepartmentsFromERP } = require("../utils/externalApi");
 const { deriveProgramme } = require("../utils/erpHelpers");
 const { computeAllocationStatus } = require("../utils/attainmentStatus");
+const { importHistoricalAttainment } = require("../utils/historicalAttainmentImport");
+const {
+  encryptPassword,
+  decryptPassword,
+  generateDepartmentPassword,
+  normalizeDepartmentCode,
+  validDepartmentPassword,
+} = require("../utils/departmentCredentials");
 
 const router = express.Router();
+const historicalUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 router.use(authRequired, adminRequired);
+
+function escapeRegex(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function departmentAliases(department) {
+  const values = [department.department_name];
+  (department.programs || []).forEach((program) => {
+    values.push(program.program_name, program.main);
+  });
+  return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+async function tagHistoricalDepartment(account) {
+  const aliases = account.programmeAliases || [];
+  if (!aliases.length) return 0;
+  const patterns = aliases.map((alias) => new RegExp(`^${escapeRegex(alias)}$`, "i"));
+  const result = await HistoricalAttainmentRecord.updateMany(
+    { department: { $in: patterns } },
+    { $set: { departmentCode: account.departmentCode } }
+  );
+  return result.modifiedCount || 0;
+}
+
+/* ---------------- Department login accounts ---------------- */
+router.post("/department-accounts/sync", async (req, res) => {
+  try {
+    const departments = await fetchDepartmentsFromERP();
+    if (!departments) return res.status(502).json({ message: "Could not reach the college departments API" });
+
+    let created = 0, updated = 0, historicalTagged = 0;
+    for (const department of departments) {
+      const departmentCode = normalizeDepartmentCode(department.department_code);
+      if (!departmentCode) continue;
+      let account = await DepartmentAccount.findOne({ departmentCode }).select("+passwordHash +passwordEncrypted");
+      if (!account) {
+        const password = generateDepartmentPassword(departmentCode);
+        account = new DepartmentAccount({
+          departmentCode,
+          departmentName: department.department_name || departmentCode,
+          erpDepartmentId: department._id || "",
+          programmeAliases: departmentAliases(department),
+          passwordHash: await bcrypt.hash(password, 10),
+          passwordEncrypted: encryptPassword(password),
+          isActive: true,
+          lastSyncedAt: new Date(),
+          passwordUpdatedBy: req.user.staff_id,
+        });
+        await account.save();
+        created += 1;
+      } else {
+        account.departmentName = department.department_name || account.departmentName;
+        account.erpDepartmentId = department._id || account.erpDepartmentId;
+        account.programmeAliases = departmentAliases(department);
+        account.lastSyncedAt = new Date();
+        await account.save();
+        updated += 1;
+      }
+      historicalTagged += await tagHistoricalDepartment(account);
+    }
+    res.json({ message: "Department accounts synchronized", received: departments.length, created, updated, historicalTagged });
+  } catch (error) {
+    res.status(500).json({ message: "Department account synchronization failed", error: error.message });
+  }
+});
+
+router.get("/department-accounts", async (req, res) => {
+  const accounts = await DepartmentAccount.find().select("+passwordEncrypted").sort({ departmentName: 1 }).lean();
+  res.json(accounts.map((account) => {
+    let password = "UNAVAILABLE";
+    try { password = decryptPassword(account.passwordEncrypted); } catch (_) {}
+    delete account.passwordEncrypted;
+    return { ...account, password };
+  }));
+});
+
+router.patch("/department-accounts/:id/password", async (req, res) => {
+  const account = await DepartmentAccount.findById(req.params.id).select("+passwordHash +passwordEncrypted");
+  if (!account) return res.status(404).json({ message: "Department account not found" });
+  const password = String(req.body.password || generateDepartmentPassword(account.departmentCode)).trim().toUpperCase();
+  if (!validDepartmentPassword(password, account.departmentCode)) {
+    return res.status(400).json({ message: `Password must be ${account.departmentCode} followed by exactly 2 digits` });
+  }
+  account.passwordHash = await bcrypt.hash(password, 10);
+  account.passwordEncrypted = encryptPassword(password);
+  account.passwordUpdatedAt = new Date();
+  account.passwordUpdatedBy = req.user.staff_id;
+  await account.save();
+  res.json({ message: "Department password updated", password });
+});
+
+router.patch("/department-accounts/:id/status", async (req, res) => {
+  const account = await DepartmentAccount.findByIdAndUpdate(
+    req.params.id,
+    { $set: { isActive: Boolean(req.body.isActive) } },
+    { new: true }
+  );
+  if (!account) return res.status(404).json({ message: "Department account not found" });
+  res.json({ message: account.isActive ? "Department login enabled" : "Department login disabled", isActive: account.isActive });
+});
+
+/* ---------------- Historical completed attainment archive ---------------- */
+router.post("/historical-attainment/import", historicalUpload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: "Select the legacy phpMyAdmin JSON file" });
+    const result = await importHistoricalAttainment(req.file.buffer, {
+      fileName: req.file.originalname,
+      importedBy: req.user.staff_id,
+    });
+    res.json({ message: "Historical attainment archive imported successfully", ...result });
+  } catch (error) {
+    res.status(400).json({ message: error.message || "Historical import failed" });
+  }
+});
+
+router.get("/historical-attainment/meta", async (req, res) => {
+  const currentFilter = { isLatest: true };
+  const [total, versions, years, departments, sections] = await Promise.all([
+    HistoricalAttainmentRecord.countDocuments(currentFilter),
+    HistoricalAttainmentRecord.countDocuments(),
+    HistoricalAttainmentRecord.distinct("academicYear", currentFilter),
+    HistoricalAttainmentRecord.distinct("department", currentFilter),
+    HistoricalAttainmentRecord.distinct("section", currentFilter),
+  ]);
+  res.json({
+    total,
+    archivedVersions: Math.max(0, versions - total),
+    years: years.sort().reverse(),
+    departments: departments.sort((a, b) => a.localeCompare(b)),
+    sections: sections.sort(),
+  });
+});
+
+router.get("/historical-attainment", async (req, res) => {
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
+  const filter = { isLatest: req.query.includeVersions === "1" ? { $in: [true, false] } : true };
+  if (req.query.academicYear) filter.academicYear = req.query.academicYear;
+  if (req.query.department) filter.department = req.query.department;
+  if (req.query.section) filter.section = req.query.section;
+  if (req.query.semester) filter.semester = Number(req.query.semester);
+  if (req.query.search) {
+    const pattern = new RegExp(escapeRegex(req.query.search.trim()), "i");
+    filter.$or = [{ courseCode: pattern }, { courseTitle: pattern }, { professorName: pattern }, { batch: pattern }];
+  }
+
+  const [total, items] = await Promise.all([
+    HistoricalAttainmentRecord.countDocuments(filter),
+    HistoricalAttainmentRecord.find(filter)
+      .sort({ academicYear: -1, department: 1, semester: 1, courseCode: 1, sourceCreatedAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+  ]);
+  res.json({ page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)), items });
+});
+
+/* ---------------- API persistence and sync audit ---------------- */
+router.get("/sync-jobs", async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+  const query = {};
+  if (req.query.status) query.status = req.query.status;
+  if (req.query.jobType) query.jobType = req.query.jobType;
+  res.json(await ApiSyncJob.find(query).sort({ createdAt: -1 }).limit(limit).lean());
+});
+
+router.get("/sync-summary", async (req, res) => {
+  const [jobs, snapshots, latest] = await Promise.all([
+    ApiSyncJob.countDocuments(),
+    ERPStudentReport.countDocuments(),
+    ApiSyncJob.findOne().sort({ createdAt: -1 }).lean(),
+  ]);
+  res.json({ jobs, studentPaperSnapshots: snapshots, latest });
+});
 
 /* ---------------- Academic Years ---------------- */
 router.get("/academic-years", async (req, res) => {
@@ -326,36 +515,6 @@ router.get("/staff-lookup/:staffId", async (req, res) => {
     return res.json({ fromErp: true, ...erpData });
   }
   res.json({ fromErp: false, ...staff.toObject() });
-});
-
-/* ---------------- Set/update a staff member's Date of Birth (login credential) ---------------- */
-router.patch("/staff/:staffId/dob", async (req, res) => {
-  const { dob } = req.body;
-  if (!dob) return res.status(400).json({ message: "dob is required" });
-
-  const parsed = new Date(dob);
-  if (isNaN(parsed.getTime())) return res.status(400).json({ message: "Invalid date" });
-
-  let staff = await Staff.findOne({ staff_id: req.params.staffId });
-  if (!staff) {
-    const erpData = await fetchStaffFromERP(req.params.staffId);
-    if (!erpData) return res.status(404).json({ message: "Staff ID not found in ERP" });
-    staff = await Staff.create({
-      staff_id: erpData.staff_id,
-      name: erpData.name,
-      designation: erpData.designation,
-      department_code: erpData.department_code,
-      department_name: erpData.department_name,
-      college_email: erpData.college_email,
-      email: erpData.email,
-      phone: erpData.phone,
-      raw: erpData,
-    });
-  }
-
-  staff.dob = parsed;
-  await staff.save();
-  res.json({ message: "DOB updated", staff_id: staff.staff_id, dob: staff.dob });
 });
 
 /* ---------------- Attainment Records (college-wide, read-only overview) ---------------- */

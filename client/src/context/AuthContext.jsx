@@ -8,23 +8,27 @@ export function AuthProvider({ children }) {
     return raw ? JSON.parse(raw) : null;
   });
   const [isAdmin, setIsAdmin] = useState(() => localStorage.getItem("isAdmin") === "true");
+  const [authType, setAuthType] = useState(() => localStorage.getItem("authType") || "staff");
 
-  function login(token, staffData, adminFlag = false) {
+  function login(token, staffData, adminFlag = false, type = adminFlag ? "admin" : "staff") {
     localStorage.setItem("token", token);
     localStorage.setItem("isAdmin", String(adminFlag));
+    localStorage.setItem("authType", type);
     if (staffData) localStorage.setItem("staff", JSON.stringify(staffData));
     setStaff(staffData);
     setIsAdmin(adminFlag);
+    setAuthType(type);
   }
 
   function logout() {
     localStorage.clear();
     setStaff(null);
     setIsAdmin(false);
+    setAuthType("staff");
   }
 
   return (
-    <AuthContext.Provider value={{ staff, isAdmin, login, logout, isAuthenticated: !!localStorage.getItem("token") }}>
+    <AuthContext.Provider value={{ staff, isAdmin, authType, isDepartment: authType === "department", login, logout, isAuthenticated: !!localStorage.getItem("token") }}>
       {children}
     </AuthContext.Provider>
   );

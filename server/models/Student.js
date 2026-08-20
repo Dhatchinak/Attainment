@@ -12,6 +12,9 @@ const StudentSchema = new mongoose.Schema(
     email: String,
     phone: String,
     isActive: { type: Boolean, default: true },
+    source: { type: String, default: "admin" },
+    sourceRecordId: { type: String, default: "" },
+    lastSyncedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

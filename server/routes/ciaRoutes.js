@@ -89,7 +89,7 @@ router.post("/:allocationId/bulk", async (req, res) => {
       ops.push({
         updateOne: {
           filter: { allocation: allocation._id, student: entry.studentId },
-          update: { $set: { componentMarks: fixed } },
+          update: { $set: { componentMarks: fixed, calculationReady: true, source: "admin" } },
           upsert: true,
         },
       });
@@ -100,7 +100,7 @@ router.post("/:allocationId/bulk", async (req, res) => {
   }
 
   if (ops.length) await CIAMark.bulkWrite(ops, { ordered: false });
-  const count = await CIAMark.countDocuments({ allocation: allocation._id });
+  const count = await CIAMark.countDocuments({ allocation: allocation._id, calculationReady: { $ne: false } });
   res.json({ message: "CIA marks saved", rowsWithMarks: count });
 });
 
@@ -148,7 +148,7 @@ router.post("/:allocationId/upload", upload.single("file"), async (req, res) => 
     if (Object.keys(componentMarks).length > 0) {
       await CIAMark.findOneAndUpdate(
         { allocation: allocation._id, student: student._id },
-        { $set: { componentMarks } },
+        { $set: { componentMarks, calculationReady: true, source: "admin" } },
         { upsert: true }
       );
       updated++;

@@ -8,6 +8,7 @@ const CIAQuestionSet = require("../models/CIAQuestionSet");
 const CIAActivitySet = require("../models/CIAActivitySet");
 const { authRequired } = require("../middleware/auth");
 const { fetchStaffFromERP } = require("../utils/externalApi");
+const { startSyncJob, finishSyncJob } = require("../utils/syncJobs");
 const {
   deriveProgramme,
   deriveSemesterFromPaperCode,
@@ -109,6 +110,7 @@ async function mergeDuplicateBatches({ staffId, academicYearId }) {
  * unique class + paper. Timetable day/hour repetitions are deliberately ignored.
  */
 router.post("/sync-my-classes", async (req, res) => {
+  let syncJob = null;
   try {
     const { academicYear } = req.body;
     if (!academicYear) {
@@ -122,6 +124,7 @@ router.post("/sync-my-classes", async (req, res) => {
     if (!erpData) return res.status(502).json({ message: "Could not reach the college ERP staff API" });
 
     const rawClasses = Array.isArray(erpData.class_attend) ? erpData.class_attend : [];
+    syncJob = await startSyncJob("STAFF_CLASSES", req.user.staff_id, { academicYearId: academicYear }, academicYearDoc.year);
     if (rawClasses.length === 0) {
       return res.status(404).json({ message: "No classes found in your ERP profile" });
     }
@@ -171,6 +174,8 @@ router.post("/sync-my-classes", async (req, res) => {
               .replace(/\s+/g, " ")
               .trim(),
             source: "erp_sync",
+            sourcePayload: entry,
+            lastSyncedAt: new Date(),
             isActive: true,
           },
         },
@@ -202,6 +207,8 @@ router.post("/sync-my-classes", async (req, res) => {
             paperType: entry.paper_type || "Theory",
             lockKey,
             source: "erp_sync",
+            sourcePayload: entry,
+            lastSyncedAt: new Date(),
             isActive: true,
           },
           $setOnInsert: {
@@ -232,9 +239,19 @@ router.post("/sync-my-classes", async (req, res) => {
         department_code: erpData.department_code,
         department_name: erpData.department_name,
         raw: erpData,
+        source: "COLLEGE_ERP",
+        lastSyncedAt: new Date(),
+        lastSyncJob: syncJob._id,
       },
       { upsert: true, new: true }
     );
+
+    await finishSyncJob(syncJob, skippedUnknownSemester ? "PARTIAL" : "SUCCESS", {
+      received: rawClasses.length,
+      inserted: allocationsCreated,
+      updated: allocationsUpdated,
+      skipped: skippedUnknownSemester,
+    });
 
     res.json({
       message: "Your current ERP classes were synced without timetable duplicates",
@@ -249,6 +266,9 @@ router.post("/sync-my-classes", async (req, res) => {
     });
   } catch (err) {
     console.error(err);
+    if (syncJob && syncJob.status === "RUNNING") {
+      await finishSyncJob(syncJob, "FAILED", { failed: 1 }, [{ key: "classes", message: err.message }]).catch(() => {});
+    }
     res.status(500).json({ message: "Sync failed", error: err.message });
   }
 });

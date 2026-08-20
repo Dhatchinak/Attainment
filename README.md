@@ -1,6 +1,14 @@
 # CO-PO-PSO Attainment Portal (MERN)
 
 Full dynamic replacement for the old attainment website (login → matrix → CIA → report).
+
+API-fetched staff, classes, students, CIA and ESE data are durably synchronized to MongoDB. See [MONGODB_DATA_STRUCTURE.md](MONGODB_DATA_STRUCTURE.md) for the complete collection map, unique keys, sync rules and admin monitoring endpoints.
+
+Completed records from the previous PHP/MySQL portal can be migrated from **Admin Console → Historical Attainment**. See [HISTORICAL_ATTAINMENT_MIGRATION.md](HISTORICAL_ATTAINMENT_MIGRATION.md).
+
+Department/HOD read-only access is available at `/department-login`. In **Admin Console → Department Logins**, synchronize the ERP department master, view the generated code-plus-two-digit credentials, reset passwords, and enable or disable accounts. A department session can see only its mapped current and migrated attainment records.
+
+For the legacy CIA/ESE API, use **Admin Console → CIA / ESE Migration**. Select the exact admission batch/class, academic year and CIA/ESE type, then migrate once. The original API evidence and normalized paper records are saved in MongoDB. Staff semester, paper and preparation screens subsequently read the MongoDB copy only; they do not call the legacy marks API.
 Nothing is hardcoded: academic years, batches/classes, staff-paper allocations, students and
 marks are all managed via the Admin console or pulled live from the college ERP.
 
@@ -26,6 +34,7 @@ cp .env.example .env
 # edit .env:
 #   MONGO_URI            -> your MongoDB connection string
 #   JWT_SECRET            -> any long random string
+#   DEPARTMENT_PASSWORD_ENCRYPTION_KEY -> a stable long random string
 #   STAFF_API_BASE         -> https://apierp.bhc.edu.in/api/staff   (already set)
 #   STAFF_API_REFERER      -> http://117.232.64.75                  (already set)
 #   GMAIL_USER / GMAIL_APP_PASSWORD -> a Gmail account + App Password (not your normal password)
@@ -47,6 +56,12 @@ App runs on http://localhost:5173 and proxies /api to the backend.
 ## 3. How the flow works end-to-end
 
 1. **Admin** logs in at `/admin-login` and:
+   - Opens **Department Logins** and synchronizes the ERP department API. The first
+     sync creates one account per department with a password such as `AS47` (the
+     department code plus two random digits). Admin can view, reset or disable it.
+   - Opens **CIA / ESE Migration**, refreshes the student directory, selects one
+     exact batch/section and academic year, and imports CIA, ESE or both. The page
+     shows success/partial/failure history and saved/failed counts.
    - Creates Academic Years (e.g. "2025-2026")
    - Creates Batches/Classes (e.g. PG · MSC CS · Year I · Section A) — this generates
      the display name "I MSC CS A" automatically.
@@ -56,9 +71,13 @@ App runs on http://localhost:5173 and proxies /api to the backend.
      only the classes/papers they actually teach.
    - Uploads the student roster (Excel: regNo, name, email, phone) per batch.
 
-2. **Staff** logs in at `/login`:
-   - Enters Staff ID → backend calls the ERP API → sends a 6-digit OTP to the staff's
-     college email via Gmail SMTP → staff enters OTP → JWT session issued.
+2. **Department/HOD** logs in at `/department-login`, chooses the department and
+   enters its assigned password. The dashboard is read-only and contains only that
+   department's current allocations/results and migrated historical records.
+
+3. **Staff** logs in at `/login`:
+   - Enters the Staff ID only. The backend verifies it against ERP, stores the current
+     staff profile in MongoDB and issues the staff session.
    - Wizard: Academic Year → Programme (UG/PG) → Batch/Class → Semester & Paper
      (only allocations belonging to that staff_id are listed).
    - **CO-PO-PSO Matrix**: staff fills correlation values (0-3) between each CO and

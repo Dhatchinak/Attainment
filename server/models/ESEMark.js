@@ -12,6 +12,10 @@ const ESEMarkSchema = new mongoose.Schema(
     student: { type: mongoose.Schema.Types.ObjectId, ref: "Student", required: true },
     obtained: { type: Number, default: 0 },
     max: { type: Number, default: 50 },
+    source: { type: String, default: "manual" },
+    sourcePayload: { type: mongoose.Schema.Types.Mixed, default: {} },
+    lastSyncedAt: { type: Date, default: null },
+    lastSyncJob: { type: mongoose.Schema.Types.ObjectId, ref: "ApiSyncJob", default: null },
   },
   { timestamps: true }
 );

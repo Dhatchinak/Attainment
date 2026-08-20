@@ -19,4 +19,11 @@ function adminRequired(req, res, next) {
   next();
 }
 
-module.exports = { authRequired, adminRequired };
+function departmentRequired(req, res, next) {
+  if (!req.user?.isDepartment || !req.user?.department_code) {
+    return res.status(403).json({ message: "Department access only" });
+  }
+  next();
+}
+
+module.exports = { authRequired, adminRequired, departmentRequired };

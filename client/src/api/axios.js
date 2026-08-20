@@ -15,7 +15,9 @@ api.interceptors.response.use(
       localStorage.removeItem("token");
       localStorage.removeItem("staff");
       localStorage.removeItem("isAdmin");
-      window.location.href = "/login";
+      const authType = localStorage.getItem("authType");
+      localStorage.removeItem("authType");
+      window.location.href = authType === "admin" ? "/admin-login" : authType === "department" ? "/department-login" : "/login";
     }
     return Promise.reject(err);
   }

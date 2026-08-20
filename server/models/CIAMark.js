@@ -13,6 +13,14 @@ const CIAMarkSchema = new mongoose.Schema(
     student: { type: mongoose.Schema.Types.ObjectId, ref: "Student", required: true },
     // Shape: { "T1": {obtained: 18, max: 20}, "T2": {...}, "Seminar": {...}, ... }
     componentMarks: { type: mongoose.Schema.Types.Mixed, default: {} },
+    total: { type: Number, default: 0 },
+    // API components may not include their official maximum marks. Such rows
+    // are preserved but excluded from attainment until Admin verifies maxima.
+    calculationReady: { type: Boolean, default: true, index: true },
+    source: { type: String, default: "manual" },
+    sourcePayload: { type: mongoose.Schema.Types.Mixed, default: {} },
+    lastSyncedAt: { type: Date, default: null },
+    lastSyncJob: { type: mongoose.Schema.Types.ObjectId, ref: "ApiSyncJob", default: null },
   },
   { timestamps: true }
 );

@@ -7,7 +7,6 @@ const STAFF_PREFIX = "BHC-STE-00";
 
 export default function Login() {
   const [staffDigits, setStaffDigits] = useState("");
-  const [dob, setDob] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const navigate = useNavigate();
@@ -28,7 +27,7 @@ export default function Login() {
     setLoading(true);
     try {
       const fullStaffId = `${STAFF_PREFIX}${staffDigits}`;
-      const res = await api.post("/auth/login", { staff_id: fullStaffId, dob });
+      const res = await api.post("/auth/login", { staff_id: fullStaffId });
       login(res.data.token, res.data.staff, false);
       navigate("/overview");
     } catch (err) {
@@ -73,23 +72,16 @@ export default function Login() {
               <p className="text-xs text-slate-400 mt-1.5">Enter only the last 3 digits. Example: 460 → {STAFF_PREFIX}460</p>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Date of Birth</label>
-              <input
-                type="date"
-                value={dob}
-                onChange={(e) => setDob(e.target.value)}
-                className="w-full input-field"
-                required
-              />
-            </div>
             {error && <p className="text-sm text-red-600">{error}</p>}
             <button disabled={loading} className="btn btn-primary w-full py-2.5">
               {loading ? "Logging in..." : "Login"}
             </button>
           </form>
 
-          <div className="mt-6 text-center">
+          <div className="mt-6 text-center flex justify-center gap-4">
+            <Link to="/department-login" className="text-xs text-gray-400 hover:text-brand">
+              Department Login
+            </Link>
             <Link to="/admin-login" className="text-xs text-gray-400 hover:text-brand">
               Administrator Login
             </Link>

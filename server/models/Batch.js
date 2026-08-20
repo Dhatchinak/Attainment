@@ -19,6 +19,8 @@ const BatchSchema = new mongoose.Schema(
     totalSemesters: { type: Number, default: 2 },
     isActive: { type: Boolean, default: true },
     source: { type: String, enum: ["admin", "erp_sync", "attainment_api"], default: "admin" },
+    sourcePayload: { type: mongoose.Schema.Types.Mixed, default: {} },
+    lastSyncedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

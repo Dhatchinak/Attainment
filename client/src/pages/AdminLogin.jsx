@@ -59,6 +59,9 @@ export default function AdminLogin() {
           <Link to="/login" className="block text-center text-xs text-gray-400 hover:text-slate-700 mt-2">
             ← Back to Staff Login
           </Link>
+          <Link to="/department-login" className="block text-center text-xs text-gray-400 hover:text-slate-700">
+            Department Login
+          </Link>
         </form>
       </div>
     </div>

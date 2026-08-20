@@ -18,10 +18,13 @@ const StaffSchema = new mongoose.Schema(
     email: String,
     phone: String,
     profile_pic: String,
-    dob: Date, // used as the login credential instead of OTP; set from ERP if available, else by admin
     role: { type: [String], default: ["staff"] }, // "staff" | "admin" (admin flag can be added manually in DB)
     isAdmin: { type: Boolean, default: false },
     raw: { type: mongoose.Schema.Types.Mixed }, // full ERP payload cache
+    source: { type: String, default: "COLLEGE_ERP" },
+    firstSyncedAt: { type: Date, default: Date.now },
+    lastSyncedAt: { type: Date, default: null },
+    lastSyncJob: { type: mongoose.Schema.Types.ObjectId, ref: "ApiSyncJob", default: null },
     lastLoginAt: Date,
   },
   { timestamps: true }

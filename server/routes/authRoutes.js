@@ -4,9 +4,51 @@ const jwt = require("jsonwebtoken");
 
 const Staff = require("../models/Staff");
 const Admin = require("../models/Admin");
+const DepartmentAccount = require("../models/DepartmentAccount");
 const { fetchStaffFromERP } = require("../utils/externalApi");
+const { startSyncJob, finishSyncJob } = require("../utils/syncJobs");
+const { normalizeDepartmentCode } = require("../utils/departmentCredentials");
 
 const router = express.Router();
+
+router.get("/departments", async (req, res) => {
+  const departments = await DepartmentAccount.find({ isActive: true })
+    .select("departmentCode departmentName")
+    .sort({ departmentName: 1 })
+    .lean();
+  res.json(departments);
+});
+
+router.post("/department-login", async (req, res) => {
+  try {
+    const departmentCode = normalizeDepartmentCode(req.body.departmentCode);
+    const password = String(req.body.password || "").trim().toUpperCase();
+    if (!departmentCode || !password) return res.status(400).json({ message: "Department and password are required" });
+
+    const account = await DepartmentAccount.findOne({ departmentCode, isActive: true }).select("+passwordHash");
+    if (!account) return res.status(404).json({ message: "Department login is not available" });
+    if (!(await bcrypt.compare(password, account.passwordHash))) {
+      return res.status(401).json({ message: "Incorrect department password" });
+    }
+    await DepartmentAccount.updateOne({ _id: account._id }, { $set: { lastLoginAt: new Date() } });
+
+    const token = jwt.sign(
+      { isDepartment: true, department_code: account.departmentCode, role: "department" },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || "8h" }
+    );
+    res.json({
+      token,
+      department: {
+        departmentCode: account.departmentCode,
+        departmentName: account.departmentName,
+        programmeAliases: account.programmeAliases,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Department login failed", error: error.message });
+  }
+});
 
 // Best-effort HOD detection from the ERP designation text (e.g. "HOD", "Head of Department",
 // "Head of the Department - Computer Science"). There's no separate role table to check against,
@@ -24,58 +66,15 @@ function normalizeStaffIdInput(value) {
   return raw;
 }
 
-function extractErpDob(erpData) {
-  const candidates = ["dob", "DOB", "date_of_birth", "dateOfBirth", "DateOfBirth", "birth_date", "birthDate"];
-  for (const key of candidates) {
-    if (erpData && erpData[key]) return erpData[key];
-  }
-  return null;
-}
-
-// Normalize any date-ish value (Date, "yyyy-mm-dd", "dd-mm-yyyy", "dd/mm/yyyy") to "yyyy-mm-dd".
-function normalizeDob(value) {
-  if (!value) return null;
-
-  if (value instanceof Date) {
-    if (isNaN(value.getTime())) return null;
-    return value.toISOString().slice(0, 10);
-  }
-
-  const str = String(value).trim();
-
-  // dd-mm-yyyy or dd/mm/yyyy
-  const dmy = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
-  if (dmy) {
-    const [, d, m, y] = dmy;
-    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-  }
-
-  // yyyy-mm-dd or yyyy/mm/dd
-  const ymd = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
-  if (ymd) {
-    const [, y, m, d] = ymd;
-    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-  }
-
-  const d = new Date(str);
-  if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
-
-  return null;
-}
-
-// STAFF LOGIN: Staff ID + Date of Birth (no OTP)
+// STAFF LOGIN: Staff ID only. The ID must resolve to an active college ERP record.
 router.post("/login", async (req, res) => {
+  let syncJob = null;
   try {
-    const { staff_id, dob } = req.body;
-    if (!staff_id || !dob) {
-      return res.status(400).json({ message: "Staff ID and Date of Birth are required" });
+    const { staff_id } = req.body;
+    if (!staff_id) {
+      return res.status(400).json({ message: "Staff ID is required" });
     }
     const normalizedStaffId = normalizeStaffIdInput(staff_id);
-
-    const enteredDob = normalizeDob(dob);
-    if (!enteredDob) {
-      return res.status(400).json({ message: "Invalid Date of Birth format" });
-    }
 
     const erpData = await fetchStaffFromERP(normalizedStaffId);
     if (!erpData) {
@@ -85,8 +84,9 @@ router.post("/login", async (req, res) => {
       return res.status(403).json({ message: "This staff account is inactive" });
     }
 
-    // cache/update staff locally (keep any dob we already stored, in case ERP has none)
-    const existing = await Staff.findOne({ staff_id: erpData.staff_id });
+    syncJob = await startSyncJob("STAFF_LOGIN", normalizedStaffId, { staff_id: normalizedStaffId });
+
+    // Cache/update the verified ERP staff profile before issuing the portal session.
     const staff = await Staff.findOneAndUpdate(
       { staff_id: erpData.staff_id },
       {
@@ -101,23 +101,13 @@ router.post("/login", async (req, res) => {
         phone: erpData.phone,
         profile_pic: erpData.profile_pic,
         raw: erpData,
+        source: "COLLEGE_ERP",
+        lastSyncedAt: new Date(),
+        lastSyncJob: syncJob._id,
       },
       { upsert: true, new: true }
     );
-
-    const erpDob = normalizeDob(extractErpDob(erpData));
-    const storedDob = normalizeDob(existing?.dob);
-    const recordDob = erpDob || storedDob;
-
-    if (!recordDob) {
-      return res.status(400).json({
-        message: "Date of Birth not on record for this Staff ID. Please contact admin.",
-      });
-    }
-
-    if (recordDob !== enteredDob) {
-      return res.status(401).json({ message: "Incorrect Date of Birth" });
-    }
+    await finishSyncJob(syncJob, "SUCCESS", { received: 1, updated: 1 });
 
     staff.lastLoginAt = new Date();
     await staff.save();
@@ -145,6 +135,9 @@ router.post("/login", async (req, res) => {
     });
   } catch (err) {
     console.error(err);
+    if (syncJob && syncJob.status === "RUNNING") {
+      await finishSyncJob(syncJob, "FAILED", { failed: 1 }, [{ key: "staff", message: err.message }]).catch(() => {});
+    }
     res.status(500).json({ message: "Login failed", error: err.message });
   }
 });

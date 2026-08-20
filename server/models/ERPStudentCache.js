@@ -8,7 +8,11 @@ const ERPStudentCacheSchema = new mongoose.Schema({
   year: { type: Number, required: true, index: true },
   section: { type: String, default: "NIL", index: true },
   dob: String,
+  source: { type: String, default: "ATTAINMENT_API" },
+  sourcePayload: { type: mongoose.Schema.Types.Mixed, default: {} },
+  firstSyncedAt: { type: Date, default: Date.now },
   syncedAt: { type: Date, default: Date.now },
+  lastSyncJob: { type: mongoose.Schema.Types.ObjectId, ref: "ApiSyncJob", default: null },
 }, { timestamps: true });
 
 ERPStudentCacheSchema.index({ degree: 1, course: 1, year: 1, section: 1 });

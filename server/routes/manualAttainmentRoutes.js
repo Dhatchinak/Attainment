@@ -5,8 +5,10 @@ const Batch = require("../models/Batch");
 const Allocation = require("../models/Allocation");
 const Student = require("../models/Student");
 const ESEMark = require("../models/ESEMark");
+const CIAMark = require("../models/CIAMark");
 const ERPStudentCache = require("../models/ERPStudentCache");
-const { authRequired } = require("../middleware/auth");
+const ERPStudentReport = require("../models/ERPStudentReport");
+const { authRequired, adminRequired } = require("../middleware/auth");
 const { deriveSemesterFromPaperCode } = require("../utils/erpHelpers");
 const {
   currentAcademicYear,
@@ -16,6 +18,7 @@ const {
   fetchAllStudents,
   fetchStudentReport,
 } = require("../utils/attainmentApi");
+const { startSyncJob, finishSyncJob } = require("../utils/syncJobs");
 
 const router = express.Router();
 router.use(authRequired);
@@ -38,21 +41,33 @@ function academicYearForBatchSemester(admissionYear, semester) {
   return `${start}-${start + 1}`;
 }
 
-async function syncStudentCache(force = false) {
+async function syncStudentCache(force = false, requestedBy = "SYSTEM") {
   const count = await ERPStudentCache.countDocuments();
   const newest = await ERPStudentCache.findOne().sort({ syncedAt: -1 }).lean();
   const stale = !newest || Date.now() - new Date(newest.syncedAt).getTime() > 12 * 60 * 60 * 1000;
   if (!force && count && !stale) return { count, refreshed: false };
 
-  const rows = await fetchAllStudents();
+  const job = await startSyncJob("STUDENT_DIRECTORY", requestedBy, { force });
+  let rows;
+  try {
+    rows = await fetchAllStudents();
+  } catch (error) {
+    await finishSyncJob(job, "FAILED", { failed: 1 }, [{ key: "directory", message: error.message }]);
+    throw error;
+  }
+  const syncTime = new Date();
   const ops = rows.map((s) => ({
     updateOne: {
       filter: { rollno: s.rollno },
-      update: { $set: { ...s, degree: inferDegree(s.course), syncedAt: new Date() } },
+      update: {
+        $set: { ...s, degree: inferDegree(s.course), source: "ATTAINMENT_API", sourcePayload: s.rawPayload || s, syncedAt: syncTime, lastSyncJob: job._id },
+        $setOnInsert: { firstSyncedAt: syncTime },
+      },
       upsert: true,
     },
   }));
   if (ops.length) await ERPStudentCache.bulkWrite(ops, { ordered: false });
+  await finishSyncJob(job, "SUCCESS", { received: rows.length, updated: rows.length });
   return { count: rows.length, refreshed: true };
 }
 
@@ -93,19 +108,16 @@ function batchStudentFilter(rows, admissionYear) {
 router.get("/bootstrap", async (req, res) => {
   try {
     const academicYear = await ensureAcademicYear();
-    const cache = await syncStudentCache(req.query.refresh === "1");
-    await syncDetectedAdmissionBatches();
+    const cache = { count: await ERPStudentCache.countDocuments(), refreshed: false, source: "MONGODB" };
     res.json({ academicYear, cache });
   } catch (err) {
-    res.status(502).json({ message: "Unable to load current ERP student data", error: err.message });
+    res.status(500).json({ message: "Unable to load migrated student data", error: err.message });
   }
 });
 
 router.get("/admission-batches", async (req, res) => {
   const { degree } = req.query;
   if (!degree) return res.status(400).json({ message: "degree is required" });
-  await syncStudentCache(false);
-  await syncDetectedAdmissionBatches();
   const rows = await AdmissionBatch.find({ degree, isActive: true }).sort({ admissionYear: -1 }).lean();
   res.json(rows);
 });
@@ -113,7 +125,6 @@ router.get("/admission-batches", async (req, res) => {
 router.get("/programmes", async (req, res) => {
   const { degree, admissionYear } = req.query;
   if (!degree || !admissionYear) return res.status(400).json({ message: "degree and batch are required" });
-  await syncStudentCache(false);
   const rows = await ERPStudentCache.find({ degree }).lean();
   const programmes = [...new Set(batchStudentFilter(rows, admissionYear).map((s) => s.course).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b));
@@ -131,15 +142,15 @@ router.get("/semesters", async (req, res) => {
     const selectedBatch = batchStudentFilter(rows, admissionYear);
     if (!selectedBatch.length) return res.json([]);
 
-    // A few students are enough to discover the paper catalogue for a batch.
-    // Use multiple students so electives / missing marks on one record do not hide a semester.
-    const sample = selectedBatch.slice(0, 6);
-    const reports = await Promise.all(sample.map((student) => fetchStudentReport(student.rollno)));
+    const reports = await ERPStudentReport.find({
+      rollno: { $in: selectedBatch.map((student) => student.rollno) },
+      admissionYear: Number(admissionYear), course,
+    }).select("semester paperCode").lean();
     const found = new Set();
 
     reports.forEach((report) => {
-      [...report.ese, ...report.cia].forEach((paper) => {
-        const direct = Number(paper.semester || paper.semesterLabel || 0);
+      [report].forEach((paper) => {
+        const direct = Number(paper.semester || 0);
         const derived = deriveSemesterFromPaperCode(paper.paperCode);
         const semester = direct || derived;
         if (semester >= 1 && semester <= 10) found.add(semester);
@@ -197,18 +208,22 @@ router.get("/papers", async (req, res) => {
     }
 
     const rows = await ERPStudentCache.find({ degree, course, section }).sort({ rollno: 1 }).lean();
-    const selected = batchStudentFilter(rows, admissionYear).slice(0, 8);
-    const reports = await Promise.all(selected.map((student) => fetchStudentReport(student.rollno)));
+    const selected = batchStudentFilter(rows, admissionYear);
+    const reports = await ERPStudentReport.find({
+      rollno: { $in: selected.map((student) => student.rollno) },
+      admissionYear: Number(admissionYear), course, section,
+      semester: Number(semester),
+    }).select("paperCode paperTitle paperType semester").lean();
     const papers = new Map();
 
     reports.forEach((report) => {
-      [...report.ese, ...report.cia].forEach((paper) => {
-        const paperSemester = Number(paper.semester || paper.semesterLabel || 0) || deriveSemesterFromPaperCode(paper.paperCode);
+      [report].forEach((paper) => {
+        const paperSemester = Number(paper.semester || 0) || deriveSemesterFromPaperCode(paper.paperCode);
         if (Number(paperSemester) !== Number(semester)) return;
         if (!papers.has(paper.paperCode)) {
           papers.set(paper.paperCode, {
             paperCode: paper.paperCode,
-            paperName: paper.title,
+            paperName: paper.paperTitle,
             paperType: paper.paperType,
             semester: Number(semester),
           });
@@ -218,11 +233,12 @@ router.get("/papers", async (req, res) => {
 
     res.json([...papers.values()].sort((a, b) => a.paperCode.localeCompare(b.paperCode)));
   } catch (err) {
-    res.status(502).json({ message: "Unable to fetch papers for the selected semester", error: err.message });
+    res.status(500).json({ message: "Unable to load migrated papers for the selected semester", error: err.message });
   }
 });
 
 router.post("/prepare", async (req, res) => {
+  let syncJob = null;
   try {
     const { degree, admissionBatchId, admissionYear, course, year, section = "NIL", semester, paperCode, paperName, paperType } = req.body;
     if (!degree || !admissionYear || !course || !year || !semester || !paperCode) return res.status(400).json({ message: "Complete all manual selections" });
@@ -230,6 +246,12 @@ router.post("/prepare", async (req, res) => {
     // Academic year follows the admission batch + semester, not the current
     // calendar year. Example: 2025 batch Sem 1/2 -> 2025-2026, Sem 3/4 -> 2026-2027.
     const academicYearLabel = academicYearForBatchSemester(admissionYear, semester);
+    syncJob = await startSyncJob(
+      "CLASS_PREPARE",
+      req.user.staff_id,
+      { degree, admissionYear, course, year, section, semester, paperCode },
+      academicYearLabel
+    );
     const academicYearDoc = await ensureAcademicYear(academicYearLabel);
     const admissionBatch = admissionBatchId ? await AdmissionBatch.findById(admissionBatchId) : null;
     if (admissionBatchId && (!admissionBatch || !admissionBatch.isActive)) return res.status(400).json({ message: "Selected admission batch is unavailable" });
@@ -249,7 +271,7 @@ router.post("/prepare", async (req, res) => {
     const studentOps = selectedRoster.map((s) => ({
       updateOne: {
         filter: { regNo: s.rollno, batch: batch._id },
-        update: { $set: { regNo: s.rollno, name: s.name, batch: batch._id, academicYear: academicYearDoc._id, isActive: true } },
+        update: { $set: { regNo: s.rollno, name: s.name, batch: batch._id, academicYear: academicYearDoc._id, isActive: true, source: "ATTAINMENT_API", sourceRecordId: s.rollno, lastSyncedAt: new Date() } },
         upsert: true,
       },
     }));
@@ -265,37 +287,157 @@ router.post("/prepare", async (req, res) => {
     const localStudents = await Student.find({ batch: batch._id, isActive: true });
     const byReg = new Map(localStudents.map((s) => [s.regNo, s]));
     const eseOps = [];
+    const ciaOps = [];
+    const reportOps = [];
+    const syncErrors = [];
 
     for (const sourceStudent of selectedRoster) {
       const student = byReg.get(sourceStudent.rollno);
       if (!student) continue;
-      const report = await fetchStudentReport(sourceStudent.rollno);
-      const ese = report.ese.find((p) => p.paperCode === paperCode);
+      const savedReport = await ERPStudentReport.findOne({
+        rollno: sourceStudent.rollno, paperCode, academicYear: academicYearLabel,
+        admissionYear: Number(admissionYear), course, section,
+      }).lean();
+      if (!savedReport) {
+        syncErrors.push({ key: sourceStudent.rollno, message: "Not migrated by Admin" });
+        continue;
+      }
+      reportOps.push(savedReport);
+      const ese = savedReport.ese;
       if (ese) {
         eseOps.push({
           updateOne: {
             filter: { allocation: allocation._id, student: student._id },
-            update: { $set: { obtained: Number(ese.obtained) || 0, max: 100 } },
+            update: { $set: { obtained: Number(ese.obtained) || 0, max: 100, source: "ATTAINMENT_API", sourcePayload: ese, lastSyncedAt: new Date(), lastSyncJob: syncJob._id } },
             upsert: true,
           },
         });
       }
-      // CIA is intentionally NOT imported from ERP here. Question-wise T1/T2
-      // and activity marks are matched from the Admin-imported CIA workbook
-      // stored in MongoDB by paper code + academic year + ODD/EVEN term.
+      const cia = savedReport.cia;
+      if (cia) {
+        const componentMarks = {};
+        Object.entries(cia.componentMarks || {}).forEach(([key, obtained]) => {
+          componentMarks[key] = { obtained: Number(obtained) || 0, max: 0 };
+        });
+        ciaOps.push({
+          updateOne: {
+            filter: { allocation: allocation._id, student: student._id },
+            update: { $set: { componentMarks, total: Number(cia.total) || 0, calculationReady: false, source: "ATTAINMENT_API", sourcePayload: cia, lastSyncedAt: new Date(), lastSyncJob: syncJob._id } },
+            upsert: true,
+          },
+        });
+      }
     }
     if (eseOps.length) await ESEMark.bulkWrite(eseOps, { ordered: false });
+    if (ciaOps.length) await CIAMark.bulkWrite(ciaOps, { ordered: false });
+
+    const status = syncErrors.length ? (reportOps.length ? "PARTIAL" : "FAILED") : "SUCCESS";
+    await finishSyncJob(syncJob, status, {
+      received: selectedRoster.length,
+      updated: reportOps.length + eseOps.length + ciaOps.length,
+      failed: syncErrors.length,
+    }, syncErrors);
 
     res.json({
       academicYear: academicYearDoc,
       admissionBatch,
       batch,
       allocation,
-      imported: { students: localStudents.length, ese: eseOps.length, cia: 0 },
+      imported: { students: localStudents.length, ese: eseOps.length, cia: ciaOps.length, reportSnapshots: reportOps.length, source: "MONGODB_ONLY" },
+      sync: { jobId: syncJob._id, status, failedStudents: syncErrors.length },
     });
   } catch (err) {
     console.error(err);
-    res.status(502).json({ message: "Failed to prepare attainment from ERP data", error: err.message });
+    if (syncJob && syncJob.status === "RUNNING") {
+      await finishSyncJob(syncJob, "FAILED", { failed: 1 }, [{ key: "prepare", message: err.message }]).catch(() => {});
+    }
+    res.status(500).json({ message: "Failed to prepare attainment from migrated MongoDB data", error: err.message });
+  }
+});
+
+/* Admin-only one-time API migration. Staff routes above never call the marks API. */
+router.get("/admin/migration-options", adminRequired, async (req, res) => {
+  try {
+    if (req.query.refresh === "1" || !(await ERPStudentCache.countDocuments())) {
+      await syncStudentCache(true, req.user.staff_id);
+      await syncDetectedAdmissionBatches();
+    }
+    const rows = await ERPStudentCache.find().sort({ course: 1, year: 1, section: 1, rollno: 1 }).lean();
+    const groups = new Map();
+    rows.forEach((student) => {
+      const admissionYear = admissionYearFromRoll(student.rollno);
+      if (!admissionYear) return;
+      const key = [admissionYear, student.degree, student.course, student.year, student.section || "NIL"].join("::");
+      if (!groups.has(key)) groups.set(key, { admissionYear, degree: student.degree, course: student.course, year: student.year, section: student.section || "NIL", studentCount: 0 });
+      groups.get(key).studentCount += 1;
+    });
+    const batches = [...groups.values()].sort((a, b) => b.admissionYear - a.admissionYear || a.course.localeCompare(b.course));
+    const jobs = await require("../models/ApiSyncJob").find({ jobType: "ACADEMIC_DATA_MIGRATION" }).sort({ createdAt: -1 }).limit(50).lean();
+    const configuredYears = await AcademicYear.find().select("year").sort({ year: -1 }).lean();
+    const yearSet = new Set(configuredYears.map((item) => item.year));
+    jobs.forEach((job) => { if (job.academicYear) yearSet.add(job.academicYear); });
+    batches.forEach((batch) => {
+      const duration = batch.degree === "PG" ? 2 : 3;
+      for (let index = 0; index < duration; index += 1) {
+        const start = Number(batch.admissionYear) + index;
+        yearSet.add(`${start}-${start + 1}`);
+      }
+    });
+    const academicYears = [...yearSet].filter(Boolean).sort().reverse();
+    res.json({ batches, academicYears, jobs });
+  } catch (error) {
+    res.status(502).json({ message: "Could not load migration options", error: error.message });
+  }
+});
+
+router.post("/admin/migrate", adminRequired, async (req, res) => {
+  let job = null;
+  try {
+    const { academicYear, admissionYear, degree, course, year, section = "NIL", dataTypes = ["CIA", "ESE"] } = req.body;
+    const wanted = [...new Set((dataTypes || []).map((value) => String(value).toUpperCase()))].filter((value) => ["CIA", "ESE"].includes(value));
+    if (!academicYear || !admissionYear || !degree || !course || !year || !wanted.length) return res.status(400).json({ message: "Academic year, batch and CIA/ESE selection are required" });
+    job = await startSyncJob("ACADEMIC_DATA_MIGRATION", req.user.staff_id, { admissionYear, degree, course, year, section, dataTypes: wanted }, academicYear);
+    const yearDoc = await ensureAcademicYear(academicYear);
+    const roster = batchStudentFilter(await ERPStudentCache.find({ degree, course, year: Number(year), section }).lean(), admissionYear);
+    if (!roster.length) throw new Error("No students found for the selected exact batch and section");
+
+    const batch = await Batch.findOneAndUpdate(
+      { course, year: String(year), section, academicYear: yearDoc._id },
+      { $set: { programme: degree, course, year: String(year), section, academicYear: yearDoc._id, admissionYear: Number(admissionYear), displayName: `${admissionYear} Batch · ${year} Year ${course}${section !== "NIL" ? ` - ${section}` : ""}`, source: "attainment_api", isActive: true, lastSyncedAt: new Date() } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    if (roster.length) await Student.bulkWrite(roster.map((student) => ({ updateOne: { filter: { regNo: student.rollno, batch: batch._id }, update: { $set: { regNo: student.rollno, name: student.name, batch: batch._id, academicYear: yearDoc._id, isActive: true, source: "ATTAINMENT_API", sourceRecordId: student.rollno, lastSyncedAt: new Date() } }, upsert: true } })), { ordered: false });
+
+    const reportOps = [];
+    const errors = [];
+    let ciaCount = 0, eseCount = 0;
+    for (const student of roster) {
+      try {
+        const report = await fetchStudentReport(student.rollno);
+        const papers = new Map();
+        report.ese.forEach((item) => papers.set(item.paperCode, { ...(papers.get(item.paperCode) || {}), ese: item }));
+        report.cia.forEach((item) => papers.set(item.paperCode, { ...(papers.get(item.paperCode) || {}), cia: item }));
+        for (const [paperCode, values] of papers) {
+          const semester = Number(values.ese?.semester || values.cia?.semesterLabel || 0) || deriveSemesterFromPaperCode(paperCode);
+          if (academicYearForBatchSemester(admissionYear, semester) !== academicYear) continue;
+          const set = {
+            admissionYear: Number(admissionYear), course, studyYear: Number(year), section, batch: batch._id,
+            semester: semester || null, paperTitle: values.ese?.title || values.cia?.title || "", paperType: values.ese?.paperType || values.cia?.paperType || "Theory",
+            source: "ATTAINMENT_API", sourceEndpoint: "admin-batch-migration", sourcePayload: report.rawPayload || values, lastSyncedAt: new Date(), lastSyncJob: job._id,
+          };
+          if (wanted.includes("CIA")) { set.cia = values.cia || null; if (values.cia) ciaCount += 1; }
+          if (wanted.includes("ESE")) { set.ese = values.ese || null; if (values.ese) eseCount += 1; }
+          reportOps.push({ updateOne: { filter: { rollno: student.rollno, paperCode, academicYear }, update: { $set: set, $setOnInsert: { firstSyncedAt: new Date() } }, upsert: true } });
+        }
+      } catch (error) { errors.push({ key: student.rollno, message: error.message }); }
+    }
+    if (reportOps.length) await ERPStudentReport.bulkWrite(reportOps, { ordered: false });
+    const status = errors.length ? (reportOps.length ? "PARTIAL" : "FAILED") : "SUCCESS";
+    await finishSyncJob(job, status, { received: roster.length, updated: reportOps.length, failed: errors.length }, errors);
+    res.json({ message: "Selected academic data is now stored in MongoDB", status, batch, migrated: { students: roster.length, reports: reportOps.length, cia: ciaCount, ese: eseCount }, failedStudents: errors.length });
+  } catch (error) {
+    if (job) await finishSyncJob(job, "FAILED", { failed: 1 }, [{ key: "migration", message: error.message }]).catch(() => {});
+    res.status(502).json({ message: "Academic data migration failed", error: error.message });
   }
 });
 

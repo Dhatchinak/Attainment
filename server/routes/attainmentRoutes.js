@@ -88,8 +88,10 @@ function serializeItem(allocation, statusInfo) {
  * to treat the literal word "overview" as an :allocationId.
  */
 router.get("/overview", async (req, res) => {
-  const filter = { staff_id: req.user.staff_id, isActive: true };
-  if (req.query.academicYear) filter.academicYear = req.query.academicYear;
+  const academicYear = String(req.query.academicYear || "").trim();
+  if (!academicYear) return res.status(400).json({ message: "academicYear is required" });
+  if (!/^[a-f\d]{24}$/i.test(academicYear)) return res.status(400).json({ message: "Invalid academic year" });
+  const filter = { staff_id: req.user.staff_id, isActive: true, academicYear };
 
   const allocations = await Allocation.find(filter)
     .populate("batch")
@@ -116,6 +118,10 @@ router.get("/department-overview", async (req, res) => {
     return res.status(403).json({ message: "HOD or admin access only" });
   }
 
+  const academicYear = String(req.query.academicYear || "").trim();
+  if (!academicYear) return res.status(400).json({ message: "academicYear is required" });
+  if (!/^[a-f\d]{24}$/i.test(academicYear)) return res.status(400).json({ message: "Invalid academic year" });
+
   let departmentCode = req.user.department_code;
   if (req.user.isAdmin && req.query.department_code) {
     departmentCode = req.query.department_code; // admin can preview any department
@@ -130,8 +136,7 @@ router.get("/department-overview", async (req, res) => {
     deptStaff.map((s) => [s.staff_id, [s.salute, s.name].filter(Boolean).join(" ") || s.staff_id])
   );
 
-  const filter = { staff_id: { $in: staffIds }, isActive: true };
-  if (req.query.academicYear) filter.academicYear = req.query.academicYear;
+  const filter = { staff_id: { $in: staffIds }, isActive: true, academicYear };
 
   const allocations = await Allocation.find(filter)
     .populate("batch")
@@ -231,7 +236,7 @@ router.post("/:allocationId/compute", async (req, res) => {
       },
     });
   } else {
-    const ciaMarks = await CIAMark.find({ allocation: allocation._id });
+    const ciaMarks = await CIAMark.find({ allocation: allocation._id, calculationReady: { $ne: false } });
     if (!ciaMarks.length) {
       return res.status(400).json({
         message: "CIA component marks are not available yet. Older academic years use the legacy component-total CIA method; ask Admin to update CIA marks.",

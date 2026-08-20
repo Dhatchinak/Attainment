@@ -110,7 +110,7 @@ async function computeAllocationStatus(allocation) {
     return { paperKey, matrix, progress, status, resumeStep, workflowMode: "question_wise" };
   }
 
-  const latestCia = await CIAMark.findOne({ allocation: allocation._id }).sort({ updatedAt: -1 });
+  const latestCia = await CIAMark.findOne({ allocation: allocation._id, calculationReady: { $ne: false } }).sort({ updatedAt: -1 });
   const calculationCurrent = calculationIsCurrent(attainment, [
     matrix?.updatedAt,
     settings?.updatedAt,

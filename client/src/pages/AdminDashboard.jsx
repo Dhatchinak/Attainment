@@ -9,16 +9,22 @@ import Allocations from "../components/admin/Allocations";
 import UploadStudents from "../components/admin/UploadStudents";
 import AttainmentRecords from "../components/admin/AttainmentRecords";
 import CIADataImport from "../components/admin/CIADataImport";
+import HistoricalAttainmentArchive from "../components/admin/HistoricalAttainmentArchive";
+import DepartmentAccounts from "../components/admin/DepartmentAccounts";
+import AcademicDataMigration from "../components/admin/AcademicDataMigration";
 
 const TABS = [
   { key: "years", label: "Academic Years", Component: AcademicYears },
   { key: "sync", label: "Sync from ERP", Component: SyncFromErp },
+  { key: "academic-migration", label: "CIA / ESE Migration", Component: AcademicDataMigration },
   { key: "admission-batches", label: "Admission Batches", Component: AdmissionBatches },
   { key: "batches", label: "Classes", Component: Batches },
   { key: "allocations", label: "Course Allocations", Component: Allocations },
   { key: "students", label: "Upload Students", Component: UploadStudents },
   { key: "cia-data", label: "CIA Data Import", Component: CIADataImport },
   { key: "attainment", label: "Attainment Records", Component: AttainmentRecords },
+  { key: "historical-attainment", label: "Historical Attainment", Component: HistoricalAttainmentArchive },
+  { key: "department-accounts", label: "Department Logins", Component: DepartmentAccounts },
 ];
 
 export default function AdminDashboard() {

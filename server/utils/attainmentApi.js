@@ -92,6 +92,7 @@ async function fetchAllStudents() {
       course: normaliseCourse(row.course || row.COURSE),
       section: clean(row.section || row.SECTION || "NIL") || "NIL",
       dob: row.dob || row.DOB || "",
+      rawPayload: row,
     });
   });
   return [...unique.values()];
@@ -157,7 +158,7 @@ async function fetchStudentReport(rollno) {
   try {
     const report = await request({ type: "report", rollno });
     const parsed = parseReport(report);
-    if (parsed.ese.length || parsed.cia.length) return parsed;
+    if (parsed.ese.length || parsed.cia.length) return { ...parsed, rawPayload: report };
   } catch (_) {
     // Older API builds may not expose a combined report; use filtered endpoints below.
   }
@@ -166,7 +167,8 @@ async function fetchStudentReport(rollno) {
     request({ type: "ese", rollno, examno: rollno, limit: 500 }),
     request({ type: "cia", rollno, regno: rollno, limit: 500 }),
   ]);
-  return parseReport({ ese: esePayload.data || [], cia: ciaPayload.data || [] });
+  const rawPayload = { ese: esePayload, cia: ciaPayload };
+  return { ...parseReport(rawPayload), rawPayload };
 }
 
 module.exports = {

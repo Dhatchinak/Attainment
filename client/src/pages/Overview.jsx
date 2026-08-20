@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import api from "../api/axios";
@@ -92,26 +92,54 @@ export default function Overview() {
   const [deptItems, setDeptItems] = useState(null);
   const [deptLoading, setDeptLoading] = useState(false);
   const [deptError, setDeptError] = useState("");
+  const overviewRequestRef = useRef(0);
+  const departmentRequestRef = useRef(0);
 
   useEffect(() => {
-    api.get("/meta/academic-years").then((res) => {
-      const years = res.data || [];
-      setAcademicYears(years);
-      const preferred = years.find((year) => year.year === "2025-2026") || years[0];
-      if (preferred) setAcademicYear(preferred._id);
-    });
+    let active = true;
+    api.get("/meta/academic-years")
+      .then((res) => {
+        if (!active) return;
+        const years = res.data || [];
+        setAcademicYears(years);
+        const preferred = years.find((year) => year.year === "2025-2026") || years[0];
+        setAcademicYear(preferred?._id || "");
+        if (!preferred) setLoading(false);
+      })
+      .catch(() => {
+        if (!active) return;
+        setError("Failed to load academic years.");
+        setLoading(false);
+      });
+    return () => { active = false; };
   }, []);
 
   const selectedYear = academicYears.find((year) => year._id === academicYear);
 
   const loadOverview = useCallback(() => {
+    if (!academicYear) {
+      setItems([]);
+      return;
+    }
+    const requestedYear = academicYear;
+    const requestId = ++overviewRequestRef.current;
     setLoading(true);
     setError("");
     api
-      .get("/attainment/overview", { params: academicYear ? { academicYear } : {} })
-      .then((res) => setItems(res.data || []))
-      .catch(() => setError("Failed to load your classes."))
-      .finally(() => setLoading(false));
+      .get("/attainment/overview", { params: { academicYear: requestedYear } })
+      .then((res) => {
+        if (requestId !== overviewRequestRef.current) return;
+        const exactYearItems = (res.data || []).filter(
+          (item) => String(item.academicYear?._id || "") === String(requestedYear)
+        );
+        setItems(exactYearItems);
+      })
+      .catch(() => {
+        if (requestId === overviewRequestRef.current) setError("Failed to load your classes.");
+      })
+      .finally(() => {
+        if (requestId === overviewRequestRef.current) setLoading(false);
+      });
   }, [academicYear]);
 
   useEffect(() => { loadOverview(); }, [loadOverview]);
@@ -121,13 +149,27 @@ export default function Overview() {
       setDeptItems(null);
       return;
     }
+    const requestedYear = academicYear;
+    const requestId = ++departmentRequestRef.current;
     setDeptLoading(true);
     setDeptError("");
     api
-      .get("/attainment/department-overview", { params: { academicYear } })
-      .then((res) => setDeptItems(res.data))
-      .catch(() => setDeptError("Failed to load the department attainment overview."))
-      .finally(() => setDeptLoading(false));
+      .get("/attainment/department-overview", { params: { academicYear: requestedYear } })
+      .then((res) => {
+        if (requestId !== departmentRequestRef.current) return;
+        setDeptItems({
+          ...res.data,
+          items: (res.data?.items || []).filter(
+            (item) => String(item.academicYear?._id || "") === String(requestedYear)
+          ),
+        });
+      })
+      .catch(() => {
+        if (requestId === departmentRequestRef.current) setDeptError("Failed to load the department attainment overview.");
+      })
+      .finally(() => {
+        if (requestId === departmentRequestRef.current) setDeptLoading(false);
+      });
   }, [staff?.isHOD, academicYear]);
 
   const summary = useMemo(() => {
@@ -293,7 +335,13 @@ export default function Overview() {
           </div>
           <div className="dashboard-year-card">
             <span>Working Academic Year</span>
-            <select value={academicYear} onChange={(e) => setAcademicYear(e.target.value)}>
+            <select value={academicYear} onChange={(e) => {
+              setItems([]);
+              setDeptItems(null);
+              setStatusFilter("all");
+              setSearch("");
+              setAcademicYear(e.target.value);
+            }}>
               {academicYears.map((year) => <option key={year._id} value={year._id}>{year.year}</option>)}
             </select>
           </div>
