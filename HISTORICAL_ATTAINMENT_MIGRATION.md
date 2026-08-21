@@ -16,7 +16,7 @@ For server-side migration:
 
 ```bash
 cd server
-node scripts/migrate-historical-attainment.js /absolute/path/attainment-export.json
+npm run migrate:historical -- /absolute/path/attainment-export.json
 ```
 
 ## Why it is a separate archive

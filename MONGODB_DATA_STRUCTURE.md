@@ -25,8 +25,13 @@ The portal reads the saved MongoDB records for its normal screens and calculatio
 
 - Fetch staff from ERP.
 - Upsert by `staff_id` into `staffs`.
-- Preserve the complete response in `raw`.
+- Preserve a sanitized ERP response in `raw`; password, date of birth, address,
+  Aadhaar and PAN values are excluded.
 - Record `lastSyncedAt` and `lastSyncJob`.
+
+The Admin CIA/ESE availability table resolves allocation `staff_id` values through
+the staff-profile API and then reuses the saved `staffs` record. It displays the
+staff name and designation while keeping `staff_id` as the allocation key.
 
 ### Current-class synchronization
 
@@ -53,7 +58,13 @@ The portal reads the saved MongoDB records for its normal screens and calculatio
 
 One record per synchronization operation.
 
-Important fields: `jobType`, `status`, `requestedBy`, `academicYear`, `scope`, `counts`, `syncErrors`, `startedAt`, `completedAt`.
+Important fields: `jobType`, `status`, `requestedBy`, `academicYear`, `scope`,
+`counts`, `progress`, `syncErrors`, `startedAt`, `completedAt`.
+
+`progress` stores `total`, `processed`, `percent`, `currentItem` and `message`.
+The Admin page polls this MongoDB-backed job after starting a background
+migration, so its progress bar is based on completed student API requests—not
+an animated estimate. Report writes are checkpointed during the run.
 
 Statuses: `RUNNING`, `SUCCESS`, `PARTIAL`, `FAILED`.
 
@@ -99,7 +110,11 @@ ERP-backed staff profile plus portal-specific access data.
 
 Unique key: `staff_id`.
 
-The complete ERP response is kept in `raw`. Passwords/API tokens are never saved here.
+Important display fields: `salute`, `name`, `designation`, `department_code`,
+`department_name`, `college_email`, `profile_pic`, `lastSyncedAt`.
+
+A sanitized ERP response is kept in `raw`. Passwords/API tokens, DOB, address,
+Aadhaar and PAN values are never saved here.
 
 #### `academicyears`
 
@@ -114,6 +129,11 @@ Admission cohorts such as the 2025 UG batch.
 One class/section in one academic year, for example `I BA English - NIL`.
 
 Important isolation fields: `program_id`, `course`, `year`, `section`, `academicYear`, `admissionYear`.
+
+`academicYear` is the teaching period (for example `2026-2027`).
+`admissionYear` is the cohort/batch start year (for example `2025 Batch`). The
+CIA/ESE availability table shows both as separate columns, followed by programme,
+study year and section.
 
 #### `allocations`
 
@@ -155,13 +175,39 @@ Like ESE, these rows are materialized from MongoDB migration evidence during sta
 
 Verified question-wise T1/T2 workbook datasets grouped by department, paper, exam, term and academic year.
 
+College-master imports additionally store `mappingStatus`, source sheet names,
+source/duplicate/mismatch counts and a `workbookImport` reference. Every
+student retains the supplied total. Conflicting duplicate rows are preserved
+in `duplicateSourceRows` but only one student row is used for calculation.
+
 #### `ciaactivitysets`
 
 Verified seminar, assignment, innovative and other activity datasets grouped by department, paper, term and academic year.
 
+The source `TOTAL`, result, course and section are retained along with audit
+counts. `PARTII_EVEN` is accepted using its official positional schema even
+when the export omits its header row.
+
+#### `ciaworkbookimports`
+
+One audit record for a college-wide academic-year CIA workbook.
+
+Important fields: `academicYear`, `sourceFileName`, `sourceFileHash`,
+`sourceFileBytes`, `status`, `terms`, `sheets`, `counts`, `progress`, `issues`,
+`departmentImports`, `startedAt`, `completedAt`.
+
+The file is processed as a background streaming job. `counts` records the
+number of departments, papers, students, question/activity rows, duplicates,
+source-total differences, unresolved rows and datasets needing CO-mapping
+review. Re-uploading the same file/year updates the same audit identity.
+
 #### `ciadepartmentimports`
 
 Department-wise import validation, warning summary, version and one-click admin verification history.
+
+For a college master workbook, the importer creates or updates one record per
+detected department automatically. `dataScope: COLLEGE_MASTER` and
+`workbookImport` link every department review back to the original file.
 
 #### `ciaverifications`
 
@@ -225,6 +271,29 @@ These routes require an admin token.
 - `POST /api/manual-attainment/admin/migrate` — fetch and persist the selected exact batch/year and CIA/ESE type
 
 Migration jobs use `jobType: ACADEMIC_DATA_MIGRATION`. Statuses are `SUCCESS`, `PARTIAL` or `FAILED`; individual student failures are retained in `syncErrors`. A failed/empty response never deletes the previous successful MongoDB copy.
+
+The Admin migration UI can run the same safe upsert sequentially for all detected batches. Its availability table combines migrated `erpstudentreports` with current `allocations`, so papers with missing CIA, missing ESE or no migrated rows remain visible.
+
+## Current and previous attainment display
+
+Admin Console uses one **All Attainment Records** page with two sources:
+
+- Current Portal Records — live allocations, progress and computed `attainments`
+- Previous System Records — read-only `historicalattainmentrecords`
+
+The collections remain separate to preserve evidence integrity. Only the user interface is merged.
+
+## Threshold and final-report rules
+
+- There is no separate Target Students setting.
+- `thresholdMarksPercent` is the single staff-configured threshold and locks after calculation begins.
+- Class outcome level is `attained students percentage / 100 × 3`.
+- Final-report achievement percentage is `observed / expected × 100`.
+- Observed values meeting the locked threshold are green and require no outcome remark.
+- Values below the threshold are red and require an outcome remark before completion.
+- The backend enforces missing red-outcome remarks; bypassing the browser field cannot complete the record.
+
+ERP Aviation programmes are split into separate department-account scopes when both are present: **Aviation (B.Sc.)** and **Aviation (BBA)**. Each virtual account retains the original ERP department code for staff lookup but filters allocations and historical data by its own ERP programme IDs and aliases.
 
 ## Department-account endpoints
 
